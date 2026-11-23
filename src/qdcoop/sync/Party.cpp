@@ -468,6 +468,39 @@ bool InteractHeld(SDK::ACharacter* ch) {
     return p.ReturnValue;
 }
 
+// ---- when the prompts may show: only in normal play, only for the teammate the player is looking at
+
+bool g_uiMode = false, g_dialogue = false, g_inputLocked = false;
+SDK::UObject* g_flagsFor = nullptr;   // the character the flags above belong to
+
+bool GameBusy(SDK::AFS_PlayerChar_C* p) {
+    if (!p) return true;
+    if (p != g_flagsFor) {   // a new character (level load): the game starts it in normal play
+        g_flagsFor = p;
+        g_uiMode = g_dialogue = g_inputLocked = false;
+    }
+    if (p->InIntroCutscene) return true;
+    if (p->CurrentCutsceneManager && ue::IsValid(reinterpret_cast<const SDK::UObject*>(p->CurrentCutsceneManager))) return true;
+    return g_uiMode || g_dialogue || g_inputLocked || ui::IsMenuOpen();
+}
+
+void OnPlayerFlag(hooks::CallInfo& ci, bool* flag, bool value) {
+    if (ci.object && ci.object == ue::LocalCharacter()) *flag = value;
+}
+
+// The camera looks at `target` (within `radius` cm of the line of sight, a little more far away).
+bool LookingAt(SDK::AFS_PlayerChar_C* p, const SDK::FVector& target, float radius) {
+    SDK::UCameraComponent* c = p ? p->FirstPersonCamera : nullptr;
+    if (!c || !ue::IsValid(c)) return false;
+    const SDK::FVector eye = c->K2_GetComponentLocation();
+    const SDK::FVector f = c->GetForwardVector();
+    const float dx = target.X - eye.X, dy = target.Y - eye.Y, dz = target.Z - eye.Z;
+    const float along = dx * f.X + dy * f.Y + dz * f.Z;
+    if (along < 20.0f) return false;
+    const float px = dx - f.X * along, py = dy - f.Y * along, pz = dz - f.Z * along;
+    return std::sqrt(px * px + py * py + pz * pz) <= radius + along * 0.05f;
+}
+
 void StopReviving() {
     auto& s = S();
     if (s.reviveTarget >= 0) SendTo(static_cast<uint8_t>(s.reviveTarget), net::PartyKind::Reviving, 0, 0);
@@ -505,17 +538,20 @@ void TickRevive(double now) {
     }
     const SDK::FVector me = p->K2_GetActorLocation();
     float best = kReviveRangeCm;
+    const bool busy = GameBusy(p);
     for (const auto& m : coop::Members()) {
+        if (busy) break;
         if (!m.present || m.isLocal || !s.downed[m.slot]) continue;
         net::Vec3f feet;
         float yaw = 0;
         if (!playersync::RemotePose(m.slot, feet, yaw)) continue;
         const float dx = feet.x - me.X, dy = feet.y - me.Y;
         const float d = std::sqrt(dx * dx + dy * dy);
-        if (d <= best && std::fabs(feet.z - me.Z) < kReviveZRangeCm) {
-            best = d;
-            s.reviveCandidate = m.slot;
-        }
+        if (d > best || std::fabs(feet.z - me.Z) >= kReviveZRangeCm) continue;
+        // the body lies on the ground: aim anywhere at it (a revive already going keeps its target)
+        if (m.slot != s.reviveTarget && !LookingAt(p, SDK::FVector{feet.x, feet.y, feet.z + 25.0f}, 90.0f)) continue;
+        best = d;
+        s.reviveCandidate = m.slot;
     }
     const bool held = s.reviveCandidate >= 0 && InteractHeld(p);
     if (!held || s.reviveCandidate != s.reviveTarget || p->Health < s.reviveHpAtStart - 0.01f) {
@@ -851,11 +887,17 @@ bool HandOver(const std::vector<OfferLine>& get) {
 // holding it next to a teammate who asked accepts. The name plate shows the hint and the progress.
 constexpr float  kTradePromptCm = 260.0f;
 constexpr double kTradeHoldSec = 0.8;
+constexpr double kTradeLookSec = 0.7;   // looking at the teammate this long shows the prompt
+constexpr double kTradeLingerSec = 0.3;  // a glance away this short keeps it
 struct TradePrompt {
     int    cand = -1;          // the teammate the prompt is for
     double start = -1;         // Interact held since
     float  progress = 0;
     bool   latch = false;      // fired: wait for Interact to be released
+    int    looked = -1;        // the teammate in the crosshair
+    double lookSince = -1;     // ... since
+    double lastSeen = -1;      // last time the shown teammate was in the crosshair
+    int    shown = -1;         // the teammate the prompt is shown for
 };
 TradePrompt g_tp;
 double g_revivingSince = 0;   // when the teammate reviving us started (our own estimate of their progress)
@@ -907,7 +949,7 @@ std::string UiNameOf(uint8_t slot);
 // The line (and bar) in the middle of the screen.
 void BuildPrompt(UiSnap& snap, double now) {
     auto& s = S();
-    if (!snap.inSession || !snap.inGame) return;
+    if (!snap.inSession || !snap.inGame || GameBusy(LocalPlayer())) return;
     if (s.localDowned) {
         if (s.revivingMe >= 0) {
             snap.prompt = ui::TrF("party.hud_being_revived", UiNameOf(static_cast<uint8_t>(s.revivingMe)));
@@ -938,11 +980,14 @@ void TickTradePrompt(double now) {
     SDK::AFS_PlayerChar_C* p = LocalPlayer();
     g_tp.cand = -1;
     if (!p || p->IsDead || s.localDowned || !coop::InSession() || s.reviveCandidate >= 0 || s.trade.stage == TradeStage::Open ||
-        s.trade.stage == TradeStage::Outgoing || ui::IsMenuOpen()) {
+        s.trade.stage == TradeStage::Outgoing || GameBusy(p)) {
         g_tp.start = -1;
         g_tp.progress = 0;
+        g_tp.looked = g_tp.shown = -1;
+        g_tp.lookSince = -1;
         return;
     }
+    int looked = -1;
     float best = kTradePromptCm + 1;
     for (const auto& m : coop::Members()) {
         if (!m.present || m.isLocal || s.downed[m.slot]) continue;
@@ -951,11 +996,19 @@ void TickTradePrompt(double now) {
         float yaw = 0;
         if (!TeammateNear(m.slot, kTradePromptCm) || !playersync::RemotePose(m.slot, feet, yaw)) continue;
         const float d = Dist(p->K2_GetActorLocation(), V(feet));
-        if (d < best) {
-            best = d;
-            g_tp.cand = m.slot;
-        }
+        if (d >= best || !LookingAt(p, SDK::FVector{feet.x, feet.y, feet.z + 100.0f}, 55.0f)) continue;
+        best = d;
+        looked = m.slot;
     }
+    // the prompt shows after looking at the same teammate for kTradeLookSec, and stays through a short glance away
+    if (looked != g_tp.looked) {
+        g_tp.looked = looked;
+        g_tp.lookSince = looked >= 0 ? now : -1;
+    }
+    if (looked >= 0 && now - g_tp.lookSince >= kTradeLookSec) g_tp.shown = looked;
+    if (looked >= 0 && looked == g_tp.shown) g_tp.lastSeen = now;
+    if (g_tp.shown >= 0 && looked != g_tp.shown && now - g_tp.lastSeen > kTradeLingerSec && g_tp.start < 0) g_tp.shown = -1;
+    g_tp.cand = g_tp.shown;
     const bool held = g_tp.cand >= 0 && InteractHeld(p);
     if (!held) {
         g_tp.latch = false;
@@ -1024,7 +1077,7 @@ void OnTradeMsg(const net::MsgParty& m) {
         t.id = m.id;
         t.peer = m.fromSlot;
         t.openedAt = Now();
-        ui::Toast(ui::TrF("trade.incoming", NameOf(m.fromSlot)), ui::ToastKind::Info, 8.0f);
+        ui::Toast(ui::TrF("trade.incoming", NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
         return;
     }
     if (t.stage == TradeStage::None || m.id != t.id || m.fromSlot != t.peer) return;
@@ -1393,18 +1446,7 @@ void DrawTradeHud() {
     }
     const Trade& t = s.trade;
     if (!s.inSession || t.stage == TradeStage::None) return;
-    if (t.stage != TradeStage::Open) {
-        const std::string line = t.stage == TradeStage::Incoming ? ui::TrF("trade.hud_incoming", s.peerName)
-                                                                 : ui::TrF("trade.hud_waiting", s.peerName);
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
-        const ImVec2 sz = ImGui::CalcTextSize(line.c_str());
-        const ImVec2 p0(io.DisplaySize.x * 0.5f - sz.x * 0.5f - 18.0f, io.DisplaySize.y * 0.80f);
-        const ImVec2 p1(p0.x + sz.x + 36.0f, p0.y + sz.y + 18.0f);
-        dl->AddRectFilled(p0, p1, IM_COL32(18, 13, 22, 225));
-        dl->AddRect(p0, p1, IM_COL32(217, 180, 90, 255), 0.0f, 0, 2.0f);
-        dl->AddText(ImVec2(p0.x + 18.0f, p0.y + 9.0f), IM_COL32(245, 234, 210, 255), line.c_str());
-        return;
-    }
+    if (t.stage != TradeStage::Open) return;   // a request is a short note, not a line kept on the screen
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.05f, 0.09f, 0.97f));
     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.71f, 0.35f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.92f, 0.82f, 1.0f));
@@ -1500,6 +1542,13 @@ void PartyInit() {
     s.hooks.push_back(hooks::AddPost(kFnRestButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, false); }));
     s.hooks.push_back(hooks::AddPost(kFnSaveButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, true); }));
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:AddItemToInventory", OnItemAdded));
+    const std::string pc = kPlayerClass;
+    s.hooks.push_back(hooks::AddPost((pc + ":EnterUIMode").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_uiMode, true); }));
+    s.hooks.push_back(hooks::AddPost((pc + ":ExitUIMode").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_uiMode, false); }));
+    s.hooks.push_back(hooks::AddPost((pc + ":StartDialogue").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_dialogue, true); }));
+    s.hooks.push_back(hooks::AddPost((pc + ":DialogueEnded").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_dialogue, false); }));
+    s.hooks.push_back(hooks::AddPost((pc + ":LockInputForLoadingOrCutscene").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_inputLocked, true); }));
+    s.hooks.push_back(hooks::AddPost((pc + ":UnlockInputForLoadingOrCutscene").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_inputLocked, false); }));
     s.ticker = gamethread::AddTicker("party", Tick);
     ui::AddMenuTab("party", "tab.party", DrawTab, 20);
     ui::AddHudDrawer("trade", DrawTradeHud);
