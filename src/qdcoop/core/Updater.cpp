@@ -370,6 +370,17 @@ void Start() {
     std::thread(CheckThread).detach();
 }
 
+void CheckNow() {
+    if (paths::ModDir().empty() || g_busy.load()) return;
+    const State st = Get().state;
+    if (st == State::Downloading || st == State::Installed) return;
+    g_started = true;
+    g_mirrorFirst = ui::GetLang() == ui::Lang::Zh;
+    g_busy = true;
+    Set(State::Checking);
+    std::thread(CheckThread).detach();
+}
+
 Status Get() {
     std::lock_guard l(g_mutex);
     return g_status;

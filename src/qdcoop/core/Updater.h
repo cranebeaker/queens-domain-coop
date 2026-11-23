@@ -25,6 +25,7 @@ struct Status {
 void   Start();          // once; safe to call again (no-op)
 Status Get();            // thread-safe
 void   BeginUpdate();    // only acts in State::Available or after a failed download
+void   CheckNow();       // ask the manifest again (the F5 About tab); no-op while busy or once an update is installed
 
 // "What's new" notice: shown once per mod version (a marker file in the mod's Saved folder).
 bool NoticeSeen();

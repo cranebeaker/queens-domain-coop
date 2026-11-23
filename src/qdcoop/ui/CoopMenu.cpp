@@ -704,6 +704,29 @@ void DrawAboutTab() {
     ImGui::Text("%s: %s", Tr("about.version"), core::kModVersion);
     ImGui::Text("%s: %s", Tr("about.author"), core::kModAuthor);
     ImGui::Spacing();
+    {   // updates: the state, Check for updates, Update now
+        const updater::Status u = updater::Get();
+        ImGui::PushTextWrapPos(0.0f);
+        switch (u.state) {
+            case updater::State::Checking: ImGui::TextDisabled("%s", Tr("about.checking")); break;
+            case updater::State::UpToDate: ImGui::TextColored(kColOk, "%s", Tr("about.up_to_date")); break;
+            case updater::State::Available: ImGui::TextColored(kColWarn, "%s", TrF("update.available", u.latest, core::kModVersion).c_str()); break;
+            case updater::State::Downloading: ImGui::TextColored(kColWarn, "%s", TrF("update.downloading", u.percent).c_str()); break;
+            case updater::State::Installed: ImGui::TextColored(kColOk, "%s", TrF("update.installed", u.latest).c_str()); break;
+            case updater::State::Failed: ImGui::TextColored(kColErr, "%s", TrF("update.failed", u.error).c_str()); break;
+            default: break;
+        }
+        ImGui::PopTextWrapPos();
+        const bool busy = u.state == updater::State::Checking || u.state == updater::State::Downloading;
+        ImGui::BeginDisabled(busy || u.state == updater::State::Installed);
+        if (ImGui::Button(Tr("about.check"))) updater::CheckNow();
+        ImGui::EndDisabled();
+        if (u.state == updater::State::Available || (u.state == updater::State::Failed && !u.latest.empty())) {
+            ImGui::SameLine();
+            if (ImGui::Button(Tr("update.button"))) updater::BeginUpdate();
+        }
+    }
+    ImGui::Spacing();
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextUnformatted(Tr("about.desc"));
     ImGui::Spacing();
@@ -875,6 +898,7 @@ void InitCoopMenu() {
     // Titles are i18n keys (translated per frame by the overlay).
     updater::Start();   // background version check
     AddMenuTab("fix", "tab.fix", DrawFixTab, 50);
+    AddMenuTab("about", "tab.about", DrawAboutTab, 1000);   // always the last tab
     AddHudDrawer("lobby", DrawLobbyWindow);
 #if QD_DEV
     const auto& cfg = config::Get();
