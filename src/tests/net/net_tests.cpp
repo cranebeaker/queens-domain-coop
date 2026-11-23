@@ -312,7 +312,7 @@ void TestRoundTrips() {
     notify.flags = kDamageHitNotifyOnly;
     RoundTrip("DamageRequest(notify)", notify, MsgType::DamageRequest);
 
-    CHECK(kProtocolVersion == 9);   // v8: Party; v7: Call; v6: WorldFlags in use, Hazard
+    CHECK(kProtocolVersion == 10);   // v10: Lobby; v8: Party; v7: Call; v6: WorldFlags in use, Hazard
     CHECK(static_cast<uint8_t>(MsgType::EnemyOwner) == 45);
     MsgEnemyOwner eo;
     eo.enemyId = 0x0123456789ABCDEFull;
@@ -396,6 +396,23 @@ void TestRoundTrips() {
         ca.target = 7;
         const auto bad = Encode(ca);
         CHECK(!Decode(bad.data(), bad.size(), cback));
+
+        MsgLobby la;
+        la.kind = LobbyKind::Start;
+        la.fromSlot = 0;
+        la.readyMask = 0b0111;
+        la.started = 1;
+        la.saveSlot = 2;
+        la.isNew = 1;
+        const auto lb = Encode(la);
+        MsgLobby lback;
+        CHECK(PeekType(lb.data(), lb.size()) == MsgType::Lobby);
+        CHECK(Decode(lb.data(), lb.size(), lback));
+        CHECK(lback.kind == LobbyKind::Start && lback.readyMask == 7 && lback.started == 1 && lback.saveSlot == 2 && lback.isNew == 1);
+        CHECK(!Decode(lb.data(), lb.size() - 1, lback));
+        la.readyMask = 0xF0;
+        const auto lbad = Encode(la);
+        CHECK(!Decode(lbad.data(), lbad.size(), lback));
 
         MsgParty pa;
         pa.kind = PartyKind::TradeOffer;

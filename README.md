@@ -18,7 +18,9 @@ to Mangolotis.
    folder. Replace the files if Knights' Domain was installed before.
 4. Start the game from Steam. Every player needs the same version of this build; it updates itself from this repo.
 
-Host: Play, Co-op, create a lobby and invite friends through Steam. Press F5 in game for the co-op window.
+Host: on the main menu open Co-op, create a lobby and invite friends through Steam. Everyone stays on the main menu:
+friends press Ready in the Co-op window (F5), and Play Game unlocks for the host once all are ready. The host presses
+Play Game and picks the save (or a new game), and everybody starts together. Press F5 in game for the co-op window.
 
 ## What is shared
 

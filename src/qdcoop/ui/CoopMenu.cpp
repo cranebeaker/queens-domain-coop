@@ -11,6 +11,7 @@
 #include "qdcoop/core/Updater.h"
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
+#include "qdcoop/sync/Lobby.h"
 #include "qdcoop/sync/CoopInternal.h"
 #include "qdcoop/sync/PlayerSync.h"
 #include "qdcoop/sync/Profiles.h"
@@ -294,7 +295,7 @@ void DrawNotice() {
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextColored(kColWarn, "%s", TrF("notice.title", core::kModVersion).c_str());
     ImGui::TextUnformatted(Tr("notice.thanks"));
-    for (const char* key : {"notice.1", "notice.2", "notice.3", "notice.4"})
+    for (const char* key : {"notice.1", "notice.2", "notice.3", "notice.4", "notice.5"})
         ImGui::TextUnformatted(Tr(key));
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
@@ -314,6 +315,43 @@ void DrawNotice() {
         updater::MarkNoticeSeen();
     }
     ImGui::Separator();
+}
+
+// ---- Waiting room (the lobby on the main menu: ready up, the host starts)
+
+void DrawWaitingRoom() {
+    const sync::LobbyView v = sync::LobbyViewNow();
+    if (!v.waiting) return;
+    ImGui::SeparatorText(Tr("lobby.title"));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(Tr(v.isHost ? "lobby.help_host" : "lobby.help_client"));
+    ImGui::PopTextWrapPos();
+    if (ImGui::BeginTable("##waiting", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn(Tr("coop.col.name"), ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(Tr("lobby.col.ready"), ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableHeadersRow();
+        for (const auto& r : v.rows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (r.isLocal) ImGui::TextColored(kColPink, "%s", TrF("coop.you", r.name).c_str());
+            else ImGui::TextUnformatted(r.name.c_str());
+            ImGui::TableNextColumn();
+            if (r.isHost) ImGui::TextColored(kColGold, "%s", Tr("lobby.state.host"));
+            else if (r.ready) ImGui::TextColored(kColOk, "%s", Tr("lobby.state.ready"));
+            else ImGui::TextColored(kColWarn, "%s", Tr("lobby.state.waiting"));
+        }
+        ImGui::EndTable();
+    }
+    ImGui::Spacing();
+    if (v.isHost) {
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(v.allReady ? kColOk : kColWarn, "%s", Tr(v.allReady ? "lobby.host_go" : "lobby.host_wait"));
+        ImGui::PopTextWrapPos();
+    } else {
+        if (ImGui::Button(Tr(v.localReady ? "lobby.not_ready" : "lobby.ready"))) sync::LobbySetReady(!v.localReady);
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", Tr("lobby.client_wait"));
+    }
 }
 
 // ---- Difficulty (host's choice; clients see what the host picked)
@@ -402,6 +440,7 @@ void DrawCoopTab() {
     }
     ImGui::EndDisabled();
 
+    DrawWaitingRoom();
     DrawFriendLobbies(s);
     DrawMembers(s);
     DrawDifficulty();

@@ -558,4 +558,26 @@ bool Decode(const uint8_t* data, size_t size, MsgParty& out) {
     });
 }
 
+std::vector<uint8_t> Encode(const MsgLobby& m) {
+    ByteWriter w = Begin(MsgType::Lobby, 8);
+    w.U8(static_cast<uint8_t>(m.kind));
+    w.U8(m.fromSlot);
+    w.U8(m.readyMask);
+    w.U8(m.started);
+    w.U8(m.saveSlot);
+    w.U8(m.isNew);
+    return w.Take();
+}
+bool Decode(const uint8_t* data, size_t size, MsgLobby& out) {
+    return DecodeInto(data, size, MsgType::Lobby, out, [](ByteReader& r, MsgLobby& m) {
+        uint8_t kind = 0;
+        if (!(r.U8(kind) && kind >= 1 && kind <= 3 && r.U8(m.fromSlot) && m.fromSlot < kMaxPlayers && r.U8(m.readyMask) &&
+              m.readyMask < (1u << kMaxPlayers) && r.U8(m.started) && m.started <= 1 && r.U8(m.saveSlot) && m.saveSlot < 16 &&
+              r.U8(m.isNew) && m.isNew <= 1))
+            return false;
+        m.kind = static_cast<LobbyKind>(kind);
+        return true;
+    });
+}
+
 }  // namespace qd::net
