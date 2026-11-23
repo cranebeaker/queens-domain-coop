@@ -26,9 +26,10 @@ namespace qd::updater {
 namespace {
 
 constexpr const char* kTag = "update";
-constexpr const char* kGithubManifest = "https://raw.githubusercontent.com/Lotisphere/KnightsDomain/main/update/manifest.json";
-// The mirror is the Cloudflare download site that mainland China can reach (tools/mirror, release/site-dl).
-constexpr const char* kMirrorManifest = "https://kd.mangolotis.com/update/manifest.json";
+constexpr const char* kGithubManifest = "https://raw.githubusercontent.com/cranebeaker/queens-domain-coop/main/update/manifest.json";
+// The Co-op Anything build has no mirror: updates come only from its own GitHub repo, never from the original
+// Knights' Domain channel (that would replace this build with one without the co-op world sync).
+constexpr const char* kMirrorManifest = "";
 constexpr size_t kMaxManifestBytes = 64 * 1024;
 constexpr size_t kMaxFileBytes = 32 * 1024 * 1024;
 
@@ -74,13 +75,13 @@ bool AllowedManifestHost(const std::wstring& host) {
 #if QD_DEV
     if (host == L"127.0.0.1" || host == L"localhost") return true;   // local test server
 #endif
-    return host == L"raw.githubusercontent.com" || host == L"kd.mangolotis.com";
+    return host == L"raw.githubusercontent.com";
 }
 bool AllowedFileHost(const std::wstring& host) {
 #if QD_DEV
     if (host == L"127.0.0.1" || host == L"localhost") return true;
 #endif
-    return host == L"github.com" || host == L"kd.mangolotis.com" || host == L"raw.githubusercontent.com";
+    return host == L"github.com" || host == L"objects.githubusercontent.com" || host == L"raw.githubusercontent.com";
 }
 
 struct Handle {
@@ -229,6 +230,7 @@ void CheckThread() {
     }
     std::string err;
     for (const std::string& url : urls) {
+        if (url.empty()) continue;
         std::vector<uint8_t> body;
         Manifest m;
         if (!HttpGet(url, true, kMaxManifestBytes, body, err) || !ParseManifest(body, m, err)) {

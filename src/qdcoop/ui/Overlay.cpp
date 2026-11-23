@@ -562,7 +562,7 @@ void DrawMenu() {
     }
     bool open = true;
     // fixed English title in both languages ("###" keeps the window id stable across the rename).
-    if (ImGui::Begin("Knights' Domain — by Mangolotis###qdcoop_main", &open, ImGuiWindowFlags_NoCollapse)) {
+    if (ImGui::Begin("Knights' Domain by Mangolotis, co-op build by Co-op Anything###qdcoop_main", &open, ImGuiWindowFlags_NoCollapse)) {
         if (tabs.empty()) {
             ImGui::TextDisabled("%s", Tr("menu.empty"));
         } else if (ImGui::BeginTabBar("##qdcoop_tabs")) {
