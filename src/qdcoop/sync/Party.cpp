@@ -40,6 +40,9 @@
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
 #include "qdcoop/sync/PlayerSync.h"
+#include "qdcoop/core/Util.h"
+#include "qdcoop/sync/BossSync.h"
+#include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
 
@@ -320,6 +323,8 @@ void SetSoft(P& p, const std::string& path) {
     p.Item.TagAtLastTest = -1;
     p.Item.ObjectID.AssetPathName = ue::MakeName(path);   // "Package.Object"
 }
+bool g_giving = false;   // our own AddItemToInventory calls (trades, shared items): never shared again
+
 bool GiveItem(const std::string& path, int count) {
     SDK::ACharacter* ch = ue::LocalCharacter();
     SDK::UObject* cdo = SaveFunctions();
@@ -328,7 +333,10 @@ bool GiveItem(const std::string& path, int count) {
     SetSoft(p, path);
     p.Count = count;
     p.__WorldContext = ch;
-    return Call(cdo, "AddItemToInventory", p);
+    g_giving = true;
+    const bool ok = Call(cdo, "AddItemToInventory", p);
+    g_giving = false;
+    return ok;
 }
 bool TakeItem(const std::string& path, int count) {
     SDK::ACharacter* ch = ue::LocalCharacter();
@@ -938,6 +946,83 @@ void OnTradeMsg(const net::MsgParty& m) {
 
 // ------------------------------------------------------------------ message handler
 
+// ------------------------------------------------------------------ shared items
+//
+// Every weapon a player gets is given to every other player too: picked up, from an NPC, a chest, an altar, a boss.
+// Weapons bought in a shop stay with the buyer, and everything else (consumables, coins, gear, keys) is traded by
+// hand in the Party tab. Items pass through the game's SaveFunctions.AddItemToInventory, hooked here; a player who
+// already has the weapon does not get a second one.
+
+constexpr uint64_t kSettleMs = 0;   // a weapon is never given twice, so the starting inventory needs no wait
+SDK::UObject* g_lastChar = nullptr;
+uint64_t g_charSince = 0;
+
+bool ShopOpen() {
+    auto& objs = SDK::UObject::GObjects;
+    for (int i = 0; i < objs->Num(); ++i) {
+        SDK::UObject* o = objs->GetByIndex(i);
+        if (!o || o->IsDefaultObject() || !o->Class || ue::Name(o->Class) != "ShopMenu_C" || !ue::IsValid(o)) continue;
+        struct { bool v; } p{false};
+        if (SDK::UFunction* f = ue::FindFunction(o, "IsInViewport")) ue::CallFunction(o, f, &p);
+        if (p.v) return true;
+    }
+    return false;
+}
+
+std::string ShortItemName(const std::string& path) {
+    const size_t dot = path.rfind('.');
+    return dot == std::string::npos ? path : path.substr(dot + 1);
+}
+
+void OnItemAdded(hooks::CallInfo& ci) {
+    if (g_giving || !ci.params || !coop::InSession() || WorldSyncReplaying() || BossSyncReplaying()) return;
+    SDK::ACharacter* ch = ue::LocalCharacter();
+    if (!ch) return;
+    const uint64_t now = util::NowMs();
+    if (ch != g_lastChar) {
+        g_lastChar = ch;
+        g_charSince = now;
+    }
+    if (now - g_charSince < kSettleMs) return;
+    auto* p = static_cast<SDK::Params::SaveFunctions_C_AddItemToInventory*>(ci.params);
+    const std::string path = ue::ToString(p->Item.ObjectID.AssetPathName);
+    if (path.empty() || p->Count <= 0 || path.size() > net::kMaxItemPathBytes) return;
+    SDK::UObject* obj = ue::LoadObject(path);
+    if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass()) || !static_cast<SDK::UFS_ItemData_C*>(obj)->Weapon) return;
+    if (ShopOpen()) {
+        QD_INFO(kTag, "item {} x{} bought (shop open): not shared", path, p->Count);
+        return;
+    }
+    net::MsgParty m;
+    m.kind = net::PartyKind::Gift;
+    m.toSlot = net::kPartyAll;
+    m.items.push_back({path, 1});
+    Send(m);
+    QD_INFO(kTag, "shared {} x{} with the party", path, p->Count);
+}
+
+void ReceiveGift(const net::MsgParty& m) {
+    for (const auto& it : m.items) {
+        SDK::UObject* obj = ue::LoadObject(it.path);
+        if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) {
+            QD_WARN(kTag, "shared item {} not found", it.path);
+            continue;
+        }
+        if (!static_cast<SDK::UFS_ItemData_C*>(obj)->Weapon) continue;   // only weapons are shared
+        if (CountOf(it.path) > 0) {
+            QD_INFO(kTag, "shared item {} from {}: already have it", it.path, NameOf(m.fromSlot));
+            continue;
+        }
+        const int count = 1;
+        if (GiveItem(it.path, count)) {
+            QD_INFO(kTag, "got shared item {} x{} from {}", it.path, count, NameOf(m.fromSlot));
+            ui::Toast(ui::TrF("party.gift", ShortItemName(it.path), NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
+        } else {
+            QD_WARN(kTag, "shared item {} x{} could not be added", it.path, count);
+        }
+    }
+}
+
 void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
     net::MsgParty m;
     if (!net::Decode(data, size, m)) return;
@@ -956,6 +1041,7 @@ void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
         return;
     }
     if (m.fromSlot == *local) return;
+    if (m.kind == net::PartyKind::Gift) return ReceiveGift(m);
 
     auto& s = S();
     switch (m.kind) {
@@ -1193,6 +1279,7 @@ void PartyInit() {
         s.hooks.push_back(hooks::AddPre((std::string(kPlayerClass) + ":" + fn).c_str(), OnBlockedInputPre));
     s.hooks.push_back(hooks::AddPost(kFnRestButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, false); }));
     s.hooks.push_back(hooks::AddPost(kFnSaveButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, true); }));
+    s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:AddItemToInventory", OnItemAdded));
     s.ticker = gamethread::AddTicker("party", Tick);
     ui::AddMenuTab("party", "tab.party", DrawTab, 20);
     QD_INFO(kTag, "party features ready (revive, party rest, trading)");

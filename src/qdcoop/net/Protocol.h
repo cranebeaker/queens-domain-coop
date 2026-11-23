@@ -8,7 +8,7 @@
 
 namespace qd::net {
 
-constexpr uint16_t kProtocolVersion = 10;   // v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
+constexpr uint16_t kProtocolVersion = 11;   // v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
 constexpr int      kMaxPlayers = 4;
 constexpr size_t   kMaxNameBytes = 72;    // UTF-8, 24 CJK chars
 constexpr size_t   kMaxItemPathBytes = 256;   // MsgEquip::itemPath
@@ -167,6 +167,7 @@ struct MsgCall {
 enum class PartyKind : uint8_t {
     Downed = 1, Reviving, Revive, Rest,
     TradeRequest = 10, TradeAccept, TradeDecline, TradeCancel, TradeOffer, TradeConfirm, TradeCommit, TradeDone,
+    Gift = 20,   // the sender got items (picked up, from an NPC, a chest, an altar...; never bought): items = what
 };
 constexpr uint8_t kPartyAll = 0xFF;
 constexpr size_t  kMaxPartyText = 256;

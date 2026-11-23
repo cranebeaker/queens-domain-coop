@@ -312,7 +312,7 @@ void TestRoundTrips() {
     notify.flags = kDamageHitNotifyOnly;
     RoundTrip("DamageRequest(notify)", notify, MsgType::DamageRequest);
 
-    CHECK(kProtocolVersion == 10);   // v10: Lobby; v8: Party; v7: Call; v6: WorldFlags in use, Hazard
+    CHECK(kProtocolVersion == 11);   // v11: Gift; v10: Lobby; v8: Party; v7: Call; v6: WorldFlags in use, Hazard
     CHECK(static_cast<uint8_t>(MsgType::EnemyOwner) == 45);
     MsgEnemyOwner eo;
     eo.enemyId = 0x0123456789ABCDEFull;

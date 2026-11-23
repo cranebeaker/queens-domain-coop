@@ -539,7 +539,7 @@ bool Decode(const uint8_t* data, size_t size, MsgParty& out) {
     return DecodeInto(data, size, MsgType::Party, out, [](ByteReader& r, MsgParty& m) {
         uint8_t kind = 0, n = 0;
         uint32_t arg = 0, a = 0;
-        if (!(r.U8(kind) && ((kind >= 1 && kind <= 4) || (kind >= 10 && kind <= 17)) && r.U8(m.fromSlot) &&
+        if (!(r.U8(kind) && ((kind >= 1 && kind <= 4) || (kind >= 10 && kind <= 17) || kind == 20) && r.U8(m.fromSlot) &&
               m.fromSlot < kMaxPlayers && r.U8(m.toSlot) && (m.toSlot < kMaxPlayers || m.toSlot == kPartyAll) &&
               r.U32(m.id) && r.U32(arg) && r.U32(a) && ReadVec(r, m.pos) && r.Str(m.text) &&
               m.text.size() <= kMaxPartyText && r.U8(n) && n <= kMaxPartyItems))
