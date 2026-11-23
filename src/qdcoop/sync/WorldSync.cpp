@@ -542,6 +542,7 @@ void Reassert(SDK::UFS_SaveSlot_C* save, const Snapshot& cur, bool onlyMissing) 
 
 bool SyncSessionFlag();
 
+constexpr const char* kRequestMarker = "q!";   // a client asks for the whole world again
 constexpr const char* kResetMarker = "r!";   // first entry of a full state: replace, do not merge
 constexpr double kWipeWaitSec = 40.0;          // a client waits this long for the host's save after a game over
 
@@ -552,6 +553,14 @@ void OnWorldFlags(uint8_t fromSlot, const uint8_t* data, size_t size) {
     if (!coop::IsHost() && fromSlot != 0) return;
     SyncSessionFlag();
     const bool host = coop::IsHost();
+    if (host && !m.flags.empty() && m.flags.front().name == kRequestMarker) {   // a client asks for everything again
+        std::vector<net::FlagValue> all;
+        Flags(s.known, nullptr, all);
+        for (const Guid& g : s.taken) all.push_back({GuidKey(g, 'x'), 0});
+        SendChunks(all, true, [fromSlot](const std::vector<uint8_t>& b) { coop::SendToSlot(fromSlot, net::Channel::Reliable, b); });
+        QD_INFO(kTag, "slot {} asked for the whole world: sent {} entries", fromSlot, all.size());
+        return;
+    }
     if (m.full && !host) s.haveFull = true;
     SDK::UFS_SaveSlot_C* save = ActiveSave();
     if (save) RebuildIndex();
@@ -708,6 +717,14 @@ void OnMember(const coop::Member& m, bool joined) {
 }  // namespace
 
 bool WorldSyncReplaying() { return S().replaying; }
+
+void WorldSyncRequestFull() {
+    if (!coop::InSession() || coop::IsHost()) return;
+    net::MsgWorldFlags m;
+    m.flags.push_back({kRequestMarker, 0});
+    coop::Broadcast(net::Channel::Reliable, net::Encode(m));
+    QD_INFO(kTag, "asked the host for the whole world again");
+}
 
 void WorldSyncPartyWiped() {
     auto& s = S();

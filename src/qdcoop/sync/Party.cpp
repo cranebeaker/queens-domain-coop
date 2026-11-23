@@ -1415,7 +1415,7 @@ void Tick(float) {
     TickTrade(now);
     TickTradePrompt(now);
     TickCatchUp(now);
-    ui::SetInputCapture(s.trade.stage == TradeStage::Open);
+    ui::SetInputCapture("trade", s.trade.stage == TradeStage::Open);
 
     if (now - s.invAt > 0.5) {
         s.invAt = now;
@@ -1504,49 +1504,54 @@ void DrawTradeBody(const UiSnap& s) {
         return;
     }
 
-    // open trade: my offer (left), theirs (right)
-    ImGui::TextUnformatted(ui::TrF("trade.with", peer).c_str());
-    if (ImGui::BeginTable("trade", 2, ImGuiTableFlags_BordersInnerV)) {
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(Tr("trade.your_offer"));
-        if (s.inv.empty()) ImGui::TextDisabled("%s", Tr("trade.nothing"));
-        for (const auto& l : s.inv) {
-            ImGui::PushID(l.path.c_str());
-            auto it = t.mine.find(l.path);
-            const int cur = it == t.mine.end() ? 0 : it->second;
-            ImGui::BeginDisabled(t.committing);
-            if (ImGui::SmallButton("-")) {
-                const std::string path = l.path;
-                gamethread::Post([path, cur] { TradeSetCount(path, cur - 1); });
-            }
-            ImGui::SameLine();
-            if (ImGui::SmallButton("+")) {
-                const std::string path = l.path;
-                gamethread::Post([path, cur] { TradeSetCount(path, cur + 1); });
-            }
-            if (l.have > 10) {   // coins and big stacks: ten at a time too
-                ImGui::SameLine();
-                if (ImGui::SmallButton("-10")) {
-                    const std::string path = l.path;
-                    gamethread::Post([path, cur] { TradeSetCount(path, cur - 10); });
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("+10")) {
-                    const std::string path = l.path;
-                    gamethread::Post([path, cur] { TradeSetCount(path, cur + 10); });
-                }
-            }
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            if (cur > 0) ImGui::TextColored(kColOk, "%d / %d  %s", cur, l.have, l.name.c_str());
-            else ImGui::Text("0 / %d  %s", l.have, l.name.c_str());
-            ImGui::PopID();
+    // open trade: inventory-style tiles. Yours: left click offers one more, right click takes one back.
+    auto tile = [](const char* id, const std::string& name, const std::string& sub, bool lit) -> int {
+        const ImVec2 size(150.0f, 72.0f);
+        ImGui::PushID(id);
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##tile", size, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
+        int click = 0;
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) click = 1;
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) click = -1;
+        const bool hover = ImGui::IsItemHovered();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p1(p0.x + size.x, p0.y + size.y);
+        dl->AddRectFilled(p0, p1, hover ? IM_COL32(52, 38, 24, 255) : IM_COL32(30, 22, 16, 255));
+        dl->AddRect(p0, p1, lit ? IM_COL32(235, 195, 95, 255) : IM_COL32(120, 95, 55, 255), 0.0f, 0, lit ? 2.5f : 1.0f);
+        dl->PushClipRect(p0, p1, true);
+        dl->AddText(nullptr, 0.0f, ImVec2(p0.x + 8.0f, p0.y + 7.0f), IM_COL32(245, 234, 210, 255), name.c_str(), nullptr, size.x - 14.0f);
+        dl->AddText(ImVec2(p0.x + 8.0f, p1.y - 22.0f), lit ? IM_COL32(235, 195, 95, 255) : IM_COL32(170, 150, 120, 255), sub.c_str());
+        dl->PopClipRect();
+        ImGui::PopID();
+        return click;
+    };
+    auto flow = [](int i, int perRow) { if (i % perRow != 0) ImGui::SameLine(); };
+    ImGui::TextUnformatted(Tr("trade.your_offer"));
+    ImGui::TextDisabled("%s", Tr("trade.tile_help"));
+    if (s.inv.empty()) ImGui::TextDisabled("%s", Tr("trade.nothing"));
+    ImGui::BeginDisabled(t.committing);
+    int i = 0;
+    for (const auto& l : s.inv) {
+        auto it = t.mine.find(l.path);
+        const int cur = it == t.mine.end() ? 0 : it->second;
+        flow(i++, 4);
+        const std::string sub = cur > 0 ? std::to_string(cur) + " / " + std::to_string(l.have) : "x" + std::to_string(l.have);
+        const int c = tile(l.path.c_str(), l.name, sub, cur > 0);
+        const int step = ImGui::GetIO().KeyShift ? 10 : 1;
+        if (c != 0) {
+            const std::string path = l.path;
+            const int want = cur + c * step;
+            gamethread::Post([path, want] { TradeSetCount(path, want); });
         }
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(ui::TrF("trade.their_offer", peer).c_str());
-        if (t.theirs.empty()) ImGui::TextDisabled("%s", Tr("trade.nothing"));
-        for (const auto& l : t.theirs) ImGui::Text("%d  %s", l.count, l.name.c_str());
-        ImGui::EndTable();
+    }
+    ImGui::EndDisabled();
+    ImGui::Spacing();
+    ImGui::TextUnformatted(ui::TrF("trade.their_offer", peer).c_str());
+    if (t.theirs.empty()) ImGui::TextDisabled("%s", Tr("trade.nothing"));
+    i = 0;
+    for (const auto& l : t.theirs) {
+        flow(i++, 4);
+        tile(("their" + l.path).c_str(), l.name, "x" + std::to_string(l.count), true);
     }
     ImGui::Separator();
     ImGui::Text("%s %s   %s %s", Tr("trade.you"), t.myConfirm ? Tr("trade.confirmed") : Tr("trade.not_confirmed"),
@@ -1628,6 +1633,15 @@ void DrawTradeHud() {
 
 }  // namespace
 
+void PartyForceStandUp() {
+    gamethread::Post([] {
+        auto slot = coop::LocalSlot();
+        if (!S().localDowned || !slot) return;
+        QD_INFO(kTag, "stand up (Fix tab)");
+        StandUp(*slot);
+    });
+}
+
 void PartyHostNewGame(int slot) {
     std::error_code ec;
     std::filesystem::remove(LedgerPath(slot), ec);
@@ -1702,7 +1716,6 @@ void PartyInit() {
     s.hooks.push_back(hooks::AddPost((pc + ":LockInputForLoadingOrCutscene").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_inputLocked, true); }));
     s.hooks.push_back(hooks::AddPost((pc + ":UnlockInputForLoadingOrCutscene").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_inputLocked, false); }));
     s.ticker = gamethread::AddTicker("party", Tick);
-    ui::AddMenuTab("party", "tab.party", DrawTab, 20);
     ui::AddHudDrawer("trade", DrawTradeHud);
     QD_INFO(kTag, "party features ready (revive, party rest, trading)");
 }

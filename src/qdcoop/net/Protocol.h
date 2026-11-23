@@ -8,7 +8,7 @@
 
 namespace qd::net {
 
-constexpr uint16_t kProtocolVersion = 12;   // v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
+constexpr uint16_t kProtocolVersion = 13;   // v13: Look (avatar head); v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
 constexpr int      kMaxPlayers = 4;
 constexpr size_t   kMaxNameBytes = 72;    // UTF-8, 24 CJK chars
 constexpr size_t   kMaxItemPathBytes = 256;   // MsgEquip::itemPath
@@ -17,7 +17,7 @@ enum class MsgType : uint8_t {
     Hello = 1, Welcome, Reject, PeerJoined, PeerLeft, NameChanged,
     PlayerState = 20, PlayerEvent, Equip = 22,
     EnemyStates = 40, EnemyEvent, DamageRequest, EnemyOwner = 45, EnemyBlob = 46, EnemyMontage = 47,
-    WorldFlags = 60, InteractRequest, InteractResult, HpScale, Summon, Hazard = 65, Call = 66, Party = 67, Lobby = 68, Character = 69,
+    WorldFlags = 60, InteractRequest, InteractResult, HpScale, Summon, Hazard = 65, Call = 66, Party = 67, Lobby = 68, Character = 69, Look = 70,
     Heartbeat = 250,   // consumed by Session
 };
 
@@ -204,6 +204,11 @@ struct MsgCharacter {
     std::vector<uint8_t> data;
 };
 
+// ---- how a player's avatar looks to the others (the knight's head, 0 to kLookHeads-1). Reliable; host relays and
+// sends everyone's to a newcomer. slot = whose look (the host rewrites it with the real sender).
+constexpr uint8_t kLookHeads = 7;
+struct MsgLook { uint8_t slot = 0, head = 0; };
+
 // ---- codec ----
 MsgType PeekType(const uint8_t* data, size_t size);   // returns (MsgType)0 if size == 0
 // Reads only [u8 Hello][u16 protocol] of a Hello, so a host can answer a Hello of another protocol version (which it
@@ -216,7 +221,7 @@ bool PeekHelloProtocol(const uint8_t* data, size_t size, uint16_t& protocol);
 QD_MSG(MsgHello) QD_MSG(MsgReject) QD_MSG(MsgWelcome) QD_MSG(MsgPeerJoined) QD_MSG(MsgPeerLeft) QD_MSG(MsgNameChanged)
 QD_MSG(MsgPlayerState) QD_MSG(MsgPlayerEvent) QD_MSG(MsgEquip)
 QD_MSG(MsgEnemyStates) QD_MSG(MsgEnemyEvent) QD_MSG(MsgDamageRequest) QD_MSG(MsgEnemyOwner) QD_MSG(MsgEnemyBlob) QD_MSG(MsgEnemyMontage)
-QD_MSG(MsgWorldFlags) QD_MSG(MsgInteractRequest) QD_MSG(MsgInteractResult) QD_MSG(MsgHpScale) QD_MSG(MsgSummon) QD_MSG(MsgHazard) QD_MSG(MsgCall) QD_MSG(MsgParty) QD_MSG(MsgLobby) QD_MSG(MsgCharacter)
+QD_MSG(MsgWorldFlags) QD_MSG(MsgInteractRequest) QD_MSG(MsgInteractResult) QD_MSG(MsgHpScale) QD_MSG(MsgSummon) QD_MSG(MsgHazard) QD_MSG(MsgCall) QD_MSG(MsgParty) QD_MSG(MsgLobby) QD_MSG(MsgCharacter) QD_MSG(MsgLook)
 #undef QD_MSG
 
 // Splits a large enemy snapshot into several complete MsgEnemyStates messages, each <= maxBytes when encoded

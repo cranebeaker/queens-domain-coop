@@ -7,6 +7,7 @@
 #include "SDK/WeaponScriptBase_classes.hpp"
 
 #include "qdcoop/sync/PlayerSync.h"
+#include "qdcoop/sync/Look.h"
 
 #include "qdcoop/core/Core.h"
 #include "qdcoop/core/Guard.h"
@@ -582,6 +583,7 @@ void Tick(float dt) {
         r.puppet->SetTransform(feet, ip.yaw);
         const float speed2D = std::sqrt(ip.vel.x * ip.vel.x + ip.vel.y * ip.vel.y);
         r.puppet->Update(ip.action, speed2D, dt);
+        r.puppet->SetHead(LookHeadOf(slot));
         ++puppets;
 
         const std::string name = m.name.empty() ? ui::Tr("name.default") + std::to_string(slot + 1) : m.name;

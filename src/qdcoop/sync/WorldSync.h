@@ -14,6 +14,8 @@ void WorldSyncNewRound();
 // Game over: the whole party is down and dies. The reload that follows takes the host's save as the world for
 // everyone (what was looted or opened since that save is back), instead of keeping the shared world.
 void WorldSyncPartyWiped();
+// Client: ask the host for its whole world again and write it into this game (the F5 Fix tab).
+void WorldSyncRequestFull();
 // True when a received event ran on this object in the last `seconds` (a pot broken by another player rolls its loot
 // at the end of its break animation, after the replay itself has returned).
 bool WorldSyncReplayedRecently(const void* obj, double seconds);

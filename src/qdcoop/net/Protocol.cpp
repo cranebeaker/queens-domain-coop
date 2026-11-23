@@ -607,4 +607,16 @@ bool Decode(const uint8_t* data, size_t size, MsgCharacter& out) {
     });
 }
 
+std::vector<uint8_t> Encode(const MsgLook& m) {
+    ByteWriter w = Begin(MsgType::Look, 4);
+    w.U8(m.slot);
+    w.U8(m.head);
+    return w.Take();
+}
+bool Decode(const uint8_t* data, size_t size, MsgLook& out) {
+    return DecodeInto(data, size, MsgType::Look, out, [](ByteReader& r, MsgLook& m) {
+        return r.U8(m.slot) && m.slot < kMaxPlayers && r.U8(m.head) && m.head < kLookHeads;
+    });
+}
+
 }  // namespace qd::net

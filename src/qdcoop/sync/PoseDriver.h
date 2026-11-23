@@ -82,6 +82,11 @@ private:
     SDK::AActor*                   actor_ = nullptr;
     SDK::USkeletalMeshComponent*   source_ = nullptr;
     SDK::UPoseableMeshComponent*   poseable_ = nullptr;
+
+public:
+    SDK::UPoseableMeshComponent* Mesh() const { return poseable_; }
+
+private:
     const void*                    mesh_ = nullptr;          // USkeletalMesh* the bone indices were resolved for
     SourceHideMode                 hiddenWith_ = SourceHideMode::HiddenInGame;
 

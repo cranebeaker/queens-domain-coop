@@ -23,6 +23,9 @@ struct LobbyView {
     bool                  isHost = false;
     bool                  allReady = false;    // every client is ready (the host picks the save now)
     bool                  localReady = false;
+    bool                  inSession = false;
+    bool                  onTitle = false;
+    bool                  started = false;
     std::vector<LobbyRow> rows;
 };
 
@@ -30,6 +33,8 @@ struct LobbyView {
 LobbyView LobbyViewNow();
 // Thread-safe: the local player is ready / not ready (clients only; the host is always ready).
 void LobbySetReady(bool ready);
+// Thread-safe: the host presses the main menu's own Play Game (its save menu opens) once everyone is ready.
+void LobbyHostPlayNow();
 
 #if QD_DEV
 // Dev console "lobby": logs "lobby state {...}" (one JSON line); "lobby ready 0|1"; "lobby start <slot> <new 0|1>"

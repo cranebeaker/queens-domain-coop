@@ -75,6 +75,7 @@ public:
     // be loaded the knight sword is kept (WARN in the log). Cheap when the path did not change.
     void SetWeapon(const std::string& itemPath);
     SDK::AActor* Actor() const;                      // the avatar actor, nullptr unless spawned
+    void SetHead(int head);                          // the look its player picked (0..6); applied when spawned
 
     const net::Vec3f& Feet() const { return feet_; }
     uint8_t Slot() const { return slot_; }
@@ -95,6 +96,9 @@ private:
     SDK::ASkeletalMeshActor*      actor_ = nullptr;
     SDK::USkeletalMeshComponent*  skel_ = nullptr;
     bool                          animated_ = false;   // false for the fallback cylinder
+    int                           head_ = -1;          // wanted head (-1: the mesh's own)
+    int                           headShown_ = -1;     // head on the spawned avatar
+    void ApplyHead();
 
     SDK::UStaticMeshComponent*    sword_ = nullptr;    // the M1 knight sword (fallback when no weapon visual)
     SDK::AActor*                  weapon_ = nullptr;   // spawned weapon visual actor, attached to Weapon_R

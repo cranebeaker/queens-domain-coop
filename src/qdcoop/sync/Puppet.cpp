@@ -11,6 +11,7 @@
 #include "qdcoop/ui/Overlay.h"
 
 #include <chrono>
+#include <cstdio>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -32,6 +33,12 @@ constexpr const char* kSwordPath    = "/Game/Enemies/Boner_00/Equipment/ShinySwo
 constexpr const char* kCylinderPath = "/Engine/BasicShapes/Cylinder.Cylinder";
 constexpr const wchar_t* kHelmetSocket = L"Head";
 constexpr const wchar_t* kSwordSocket  = L"Weapon_R";
+// the knight's heads (Knight_head_00_MI .. 06): the look players pick for their avatar
+std::string HeadMaterialPath(int head) {
+    char b[96];
+    std::snprintf(b, sizeof(b), "/Game/NPCs/Knight/Knight_head_%02d_MI.Knight_head_%02d_MI", head, head);
+    return b;
+}
 
 constexpr float kWalkThreshold  = 30.0f;   // cm/s
 // Locomotion: the remote speed is sampled at 20 Hz and jitters around the threshold, which used to flip
@@ -490,6 +497,8 @@ bool Puppet::Spawn(const net::Vec3f& feet, float yaw) {
         // visible PoseableMesh on top of the (hidden, still animating) source; moves the sword onto it.
         pose_.SetMeshForwardYaw(-MeshYawOffset());
         if (!pose_.Attach(actor_, skel_)) QD_WARN(kTag, "slot {}: procedural attacks unavailable (PoseDriver::Attach failed)", slot_);
+        headShown_ = -1;
+        ApplyHead();
     } else {
         // Fallback: a scaled engine cylinder standing on the feet point (cylinder is 100 cm tall, centred on its origin).
         AddStaticMesh(actor_, a.cylinder, false, MakeTransform(SDK::FVector(0, 0, 90), SDK::FVector(0.6f, 0.6f, 1.8f)));
@@ -765,6 +774,42 @@ void Puppet::Update(uint16_t actionId, float speed2D, float dt) {
             Play(a.idle, true, 1.0f);
             return;
     }
+}
+
+void Puppet::SetHead(int head) {
+    if (head < 0 || head >= net::kLookHeads || head == head_) return;
+    head_ = head;
+    ApplyHead();
+}
+
+// The head is one material slot of the knight mesh (the one using a Knight_head_* material); the visible poseable copy
+// gets the same material.
+void Puppet::ApplyHead() {
+    if (head_ < 0 || head_ == headShown_ || !skel_ || !ue::IsValid(skel_) || !animated_) return;
+    SDK::UObject* mat = ue::LoadObject(HeadMaterialPath(head_));
+    if (!mat || !mat->IsA(SDK::UMaterialInterface::StaticClass())) {
+        QD_WARN(kTag, "slot {}: head {} material not found", slot_, head_);
+        headShown_ = head_;
+        return;
+    }
+    int index = -1;
+    for (int i = 0; i < skel_->GetNumMaterials(); ++i) {
+        SDK::UMaterialInterface* m = skel_->GetMaterial(i);
+        if (m && ue::Name(m).rfind("Knight_head", 0) == 0) {
+            index = i;
+            break;
+        }
+    }
+    if (index < 0) {
+        QD_WARN(kTag, "slot {}: no head material slot on the knight mesh", slot_);
+        headShown_ = head_;
+        return;
+    }
+    auto* mi = static_cast<SDK::UMaterialInterface*>(mat);
+    skel_->SetMaterial(index, mi);
+    if (SDK::UPoseableMeshComponent* p = pose_.Mesh(); p && ue::IsValid(p)) p->SetMaterial(index, mi);
+    headShown_ = head_;
+    QD_INFO(kTag, "slot {}: head {}", slot_, head_);
 }
 
 }  // namespace qd::sync

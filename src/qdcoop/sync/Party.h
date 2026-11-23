@@ -10,6 +10,8 @@ void PartyInit();       // after coop::Init + ui::Init: message handler, hooks, 
 void PartyShutdown();
 // Host: a new game in `slot` starts a new list of shared items for it.
 void PartyHostNewGame(int slot);
+// The local player is down and nobody can get them up (stuck): stand up now. Thread-safe.
+void PartyForceStandUp();
 
 // Game thread. The local player is down (ran out of health with a teammate who can revive them). PlayerSync shows a
 // downed player as lying (the dead pose) and EnemySync stops picking them as a target.

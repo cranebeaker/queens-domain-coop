@@ -252,6 +252,9 @@ void PublishView(bool waiting) {
     auto& s = S();
     LobbyView v;
     v.waiting = waiting;
+    v.inSession = coop::InSession();
+    v.onTitle = s.onTitle;
+    v.started = s.started;
     v.isHost = coop::IsHost();
     v.localReady = s.localReady;
     v.allReady = AllClientsReady();
@@ -357,6 +360,17 @@ void LobbySetReady(bool ready) {
         m.kind = net::LobbyKind::Ready;
         m.readyMask = ready ? 1 : 0;
         coop::SendToHost(net::Channel::Reliable, net::Encode(m));
+    });
+}
+
+void LobbyHostPlayNow() {
+    gamethread::Post([] {
+        SDK::UTitleScreenUI_C* t = FindTitle();
+        if (!t || (coop::InSession() && (!coop::IsHost() || !AllClientsReady()))) return;
+        SetButtons(t, true);
+        // the game's own handler of Play Game: opens the save menu
+        struct { SDK::UObject* button; } p{t->LoadGameButton};
+        Call(t, "BndEvt__TitleScreenUI_LoadGameButton_K2Node_ComponentBoundEvent_0_CommonButtonBaseClicked__DelegateSignature", p);
     });
 }
 

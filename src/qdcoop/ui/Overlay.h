@@ -36,8 +36,9 @@ void ConsolePrint(const std::string& utf8);   // thread-safe
 // A HUD drawer runs every frame on the render thread (same rules as a menu tab's draw), with or without the F5 menu:
 // pop-up windows of a module (the trade window). It reads state cached on the game thread only.
 void AddHudDrawer(const char* id, std::function<void()> draw);
-// While on, the game's keyboard and mouse input is captured for the overlay (as with the F5 menu open). Thread-safe.
-void SetInputCapture(bool on);
+// While any window holds it, the game's keyboard and mouse input is captured for the overlay (as with the F5 menu
+// open). `who` names the window ("trade", "lobby"). Thread-safe.
+void SetInputCapture(const char* who, bool on);
 
 enum class ToastKind { Info, Success, Warning, Error };
 void Toast(const std::string& utf8, ToastKind kind = ToastKind::Info, float seconds = 4.0f);   // thread-safe

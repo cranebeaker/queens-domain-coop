@@ -914,8 +914,19 @@ void AddHudDrawer(const char* id, std::function<void()> draw) {
     g_hud.emplace_back(id ? id : "", std::move(draw));
 }
 
-void SetInputCapture(bool on) {
-    if (g_panelModule.exchange(on) == on) return;
+void SetInputCapture(const char* who, bool on) {
+    static std::mutex mx;
+    static std::vector<std::string> holders;
+    bool any;
+    {
+        std::lock_guard lk(mx);
+        const std::string w = who ? who : "";
+        auto it = std::find(holders.begin(), holders.end(), w);
+        if (on && it == holders.end()) holders.push_back(w);
+        if (!on && it != holders.end()) holders.erase(it);
+        any = !holders.empty();
+    }
+    if (g_panelModule.exchange(any) == any) return;
     ApplyPanels();
 }
 

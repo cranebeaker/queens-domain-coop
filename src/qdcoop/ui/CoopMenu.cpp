@@ -12,6 +12,10 @@
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
 #include "qdcoop/sync/Lobby.h"
+#include "qdcoop/sync/Look.h"
+#include "qdcoop/sync/Party.h"
+#include "qdcoop/sync/Summon.h"
+#include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/sync/CoopInternal.h"
 #include "qdcoop/sync/PlayerSync.h"
 #include "qdcoop/sync/Profiles.h"
@@ -380,13 +384,20 @@ void DrawDifficulty() {
         });
     };
     ImGui::BeginDisabled(!d.isHost);
-    const std::string cur = cfg.difficulty;
+    std::string cur = cfg.difficulty;
+    if (!d.isHost && d.players > 1) {   // a client shows what the host picked
+        const float extra = static_cast<float>(d.players - 1);
+        const float hp = (d.normal - 1.0f) / extra, dmg = (d.damage - 1.0f) / extra;
+        cur = (std::fabs(hp - 0.12f) < 0.01f && dmg < 0.01f)                    ? "normal"
+              : (std::fabs(hp - 1.0f) < 0.01f && std::fabs(dmg - 0.25f) < 0.01f) ? "hard"
+                                                                                : "custom";
+    }
     if (ImGui::RadioButton(Tr("diff.normal"), cur == "normal") && cur != "normal") pick("normal");
     ImGui::SameLine();
     if (ImGui::RadioButton(Tr("diff.hard"), cur == "hard") && cur != "hard") pick("hard");
     ImGui::SameLine();
     if (ImGui::RadioButton(Tr("diff.custom"), cur == "custom") && cur != "custom") pick("custom");
-    if (cur == "custom") {
+    if (cur == "custom" && d.isHost) {
         ImGui::SliderFloat(Tr("diff.hp_slider"), &g_customHp, 0.0f, 300.0f, "+%.0f %%");
         bool done = ImGui::IsItemDeactivatedAfterEdit();   // saved once the slider is let go
         ImGui::SliderFloat(Tr("diff.dmg_slider"), &g_customDamage, 0.0f, 200.0f, "+%.0f %%");
@@ -499,6 +510,191 @@ void DrawNameTab() {
     ImGui::TextDisabled("%s", Tr("name.help1"));
     ImGui::TextDisabled("%s", Tr("name.help2"));
     ImGui::PopTextWrapPos();
+}
+
+// ---- the lobby window: in the game's colours, opened from the main menu's Co-op button
+
+std::atomic<bool> g_lobbyOpen{false};
+
+void StyledBegin() {
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.05f, 0.09f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.71f, 0.35f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.92f, 0.82f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.17f, 0.10f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.45f, 0.32f, 0.14f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.62f, 0.47f, 0.18f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.16f, 0.12f, 0.08f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.26f, 0.19f, 0.11f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.92f, 0.78f, 0.40f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImVec4(0.85f, 0.71f, 0.35f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.85f, 0.71f, 0.35f, 0.6f));
+    ImGui::PushStyleColor(ImGuiCol_TableRowBgAlt, ImVec4(1.0f, 0.9f, 0.6f, 0.04f));
+    ImGui::PushStyleColor(ImGuiCol_TableHeaderBg, ImVec4(0.24f, 0.17f, 0.10f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(24.0f, 20.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 9.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12.0f, 6.0f));
+}
+void StyledEnd() {
+    ImGui::PopStyleVar(6);
+    ImGui::PopStyleColor(13);
+}
+void Heading(const char* text) {
+    ImGui::Spacing();
+    ImGui::SetWindowFontScale(1.2f);
+    ImGui::TextColored(ImVec4(0.92f, 0.78f, 0.40f, 1.0f), "%s", text);
+    ImGui::SetWindowFontScale(1.1f);
+    ImGui::Separator();
+}
+
+void DrawLobbyPlayers(const sync::LobbyView& v) {
+    if (ImGui::BeginTable("##lobby_players", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("state", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+        for (const auto& r : v.rows) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (r.isLocal) ImGui::TextColored(kColPink, "%s", TrF("coop.you", r.name).c_str());
+            else ImGui::TextUnformatted(r.name.c_str());
+            ImGui::TableNextColumn();
+            if (r.isHost) ImGui::TextColored(kColGold, "%s", Tr("lobby.state.host"));
+            else if (!v.onTitle || v.started) ImGui::TextDisabled("%s", Tr("lobby.state.playing"));
+            else if (r.ready) ImGui::TextColored(kColOk, "%s", Tr("lobby.state.ready"));
+            else ImGui::TextColored(kColWarn, "%s", Tr("lobby.state.waiting"));
+        }
+        ImGui::EndTable();
+    }
+}
+
+void DrawLobbyWindow() {
+    if (!g_lobbyOpen.load()) return;
+    const Snapshot s = Copy();
+    const sync::LobbyView v = sync::LobbyViewNow();
+    ImGuiIO& io = ImGui::GetIO();
+    StyledBegin();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::min(720.0f, io.DisplaySize.x * 0.9f), std::min(760.0f, io.DisplaySize.y * 0.9f)), ImGuiCond_Always);
+    if (ImGui::Begin("##qd_lobby", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                               ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::SetWindowFontScale(1.6f);
+        ImGui::TextColored(ImVec4(0.92f, 0.78f, 0.40f, 1.0f), "%s", Tr("lobby.window_title"));
+        ImGui::SetWindowFontScale(1.1f);
+        ImGui::SameLine(ImGui::GetWindowWidth() - 140.0f);
+        if (ImGui::Button(Tr("lobby.close"), ImVec2(110, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) ShowLobby(false);
+        DrawUpdateBanner();
+        DrawNotice();
+        ImGui::PushTextWrapPos(0.0f);
+        if (s.coopDisabled || s.ownership == core::Ownership::Failed) ImGui::TextColored(kColErr, "%s", Tr("own.failed"));
+        else if (!s.sessionOk) ImGui::TextColored(kColWarn, "%s", Tr("coop.starting"));
+        else if (!s.coopAllowed) ImGui::TextColored(kColWarn, "%s", Tr("coop.verifying"));
+        ImGui::PopTextWrapPos();
+        StatusLine(s);
+
+        const bool idle = IsIdleLike(s.state);
+        if (idle) {
+            ImGui::BeginDisabled(!s.coopAllowed);
+            if (ImGui::Button(Tr("coop.host"), ImVec2(200, 0))) gamethread::Post([] {
+                    if (coop::CoopAllowed()) coop::Session().Host();
+                });
+            ImGui::EndDisabled();
+            DrawFriendLobbies(s);
+        } else {
+            Heading(Tr("lobby.players"));
+            DrawLobbyPlayers(v);
+            if (v.inSession && v.onTitle && !v.started) {
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextDisabled("%s", Tr(v.isHost ? "lobby.help_host" : "lobby.help_client"));
+                ImGui::PopTextWrapPos();
+                if (v.isHost) {
+                    ImGui::BeginDisabled(!v.allReady);
+                    ImGui::SetWindowFontScale(1.3f);
+                    if (ImGui::Button(Tr("lobby.play_now"), ImVec2(260, 0))) {
+                        sync::LobbyHostPlayNow();
+                        ShowLobby(false);
+                    }
+                    ImGui::SetWindowFontScale(1.1f);
+                    ImGui::EndDisabled();
+                    if (!v.allReady) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(kColWarn, "%s", Tr("lobby.host_wait"));
+                    }
+                } else {
+                    ImGui::SetWindowFontScale(1.3f);
+                    if (ImGui::Button(Tr(v.localReady ? "lobby.not_ready" : "lobby.ready"), ImVec2(260, 0))) sync::LobbySetReady(!v.localReady);
+                    ImGui::SetWindowFontScale(1.1f);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("%s", Tr("lobby.client_wait"));
+                }
+            }
+            ImGui::Spacing();
+            if (ImGui::Button(Tr("coop.leave"), ImVec2(200, 0))) {
+                gamethread::Post([] {
+                    if (!coop::SessionReady()) return;
+                    coop::Session().Leave();
+                    ui::Toast(Tr("toast.left_session"), ui::ToastKind::Info);
+                });
+            }
+        }
+
+        Heading(Tr("lobby.you"));
+        DrawNameTab();
+        ImGui::Spacing();
+        {
+            const int head = sync::LookLocalHead();
+            ImGui::TextUnformatted(Tr("lobby.head"));
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##head_prev", ImGuiDir_Left)) sync::LookSetLocalHead((head + net::kLookHeads - 1) % net::kLookHeads);
+            ImGui::SameLine();
+            ImGui::Text("%d / %d", head + 1, static_cast<int>(net::kLookHeads));
+            ImGui::SameLine();
+            if (ImGui::ArrowButton("##head_next", ImGuiDir_Right)) sync::LookSetLocalHead((head + 1) % net::kLookHeads);
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s", Tr("lobby.head_help"));
+        }
+        Heading(Tr("diff.title"));
+        DrawDifficulty();
+        ImGui::Spacing();
+        DrawLanguageSwitch();
+        ImGui::TextDisabled("%s %s, %s", core::kModName, core::kModVersion, Tr("about.disclaimer"));
+    }
+    ImGui::End();
+    StyledEnd();
+}
+
+// ---- F5 > Fix: ways out of a stuck game
+
+void DrawFixTab() {
+    const Snapshot s = Copy();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", Tr("fix.help"));
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    if (ImGui::Button(Tr("fix.lobby"), ImVec2(320, 0))) {
+        SetMenuOpen(false);
+        ShowLobby(true);
+    }
+    const bool client = s.inSession && !s.isHost;
+    ImGui::BeginDisabled(!client);
+    if (ImGui::Button(Tr("fix.teleport"), ImVec2(320, 0))) gamethread::Post([] { sync::SummonToHost(); });
+    if (ImGui::Button(Tr("fix.resync"), ImVec2(320, 0))) {
+        gamethread::Post([] { sync::WorldSyncRequestFull(); });
+        ui::Toast(Tr("fix.resync_done"), ui::ToastKind::Info);
+    }
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!s.inSession);
+    if (ImGui::Button(Tr("fix.stand_up"), ImVec2(320, 0))) sync::PartyForceStandUp();
+    if (ImGui::Button(Tr("coop.leave"), ImVec2(320, 0))) {
+        gamethread::Post([] {
+            if (!coop::SessionReady()) return;
+            coop::Session().Leave();
+            ui::Toast(Tr("toast.left_session"), ui::ToastKind::Info);
+        });
+    }
+    ImGui::EndDisabled();
+    ImGui::Spacing();
+    ImGui::TextDisabled("%s %s", core::kModName, core::kModVersion);
 }
 
 // ---- About (no store link)
@@ -678,9 +874,8 @@ void InitCoopMenu() {
 
     // Titles are i18n keys (translated per frame by the overlay).
     updater::Start();   // background version check
-    AddMenuTab("coop", "tab.coop", DrawCoopTab, 10);
-    AddMenuTab("name", "tab.name", DrawNameTab, 20);
-    AddMenuTab("about", "tab.about", DrawAboutTab, 1000);   // always the last tab
+    AddMenuTab("fix", "tab.fix", DrawFixTab, 50);
+    AddHudDrawer("lobby", DrawLobbyWindow);
 #if QD_DEV
     const auto& cfg = config::Get();
     for (int i = 0; i < IM_ARRAYSIZE(kLogLevels); ++i)
@@ -688,6 +883,13 @@ void InitCoopMenu() {
     AddMenuTab("debug", "调试", DrawDebugTab, 90);   // lives in the ~ console (Overlay IsDebugTab)
 #endif
 }
+
+void ShowLobby(bool open) {
+    g_lobbyOpen = open;
+    SetInputCapture("lobby", open);
+}
+
+bool LobbyShown() { return g_lobbyOpen.load(); }
 
 void ShutdownCoopMenu() {
     if (g_ticker) {
