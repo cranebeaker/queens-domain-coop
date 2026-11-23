@@ -8,6 +8,9 @@ void WorldSyncInit();       // message handler + ticker; call after coop::Init
 void WorldSyncShutdown();
 // True while an event received from another machine runs here (its loot rolls are skipped: the drop comes from there).
 bool WorldSyncReplaying();
+// Back at the main menu (a new game or another save comes next): forget the shared world of the last game, so it is
+// not written into the next one. The host sends its new world to everyone once it has loaded.
+void WorldSyncNewRound();
 // True when a received event ran on this object in the last `seconds` (a pot broken by another player rolls its loot
 // at the end of its break animation, after the replay itself has returned).
 bool WorldSyncReplayedRecently(const void* obj, double seconds);

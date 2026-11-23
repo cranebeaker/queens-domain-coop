@@ -231,6 +231,8 @@ void DrawTab() {
 
 }  // namespace
 
+void SummonToHost() { DoSummon(); }
+
 void SummonInit() {
     auto& s = S();
     if (s.inited) return;

@@ -158,6 +158,8 @@ struct UiSnap {
     Trade trade;
     std::string peerName;
     std::vector<InvLine> inv;
+    std::string prompt;          // centre of the screen: what Interact does now / what is happening to us
+    float       progress = -1;   // 0..1 under the prompt; -1 = no bar
 };
 
 struct State {
@@ -236,6 +238,8 @@ std::string NameOf(uint8_t slot) {
 }
 
 // ------------------------------------------------------------------ messages
+
+std::string UiNameOf(uint8_t slot);
 
 void Send(net::MsgParty m) {
     auto slot = coop::LocalSlot();
@@ -843,6 +847,135 @@ bool HandOver(const std::vector<OfferLine>& get) {
     return true;
 }
 
+// Trade prompt: next to a teammate (both up, no trade going), hold Interact for kTradeHoldSec to ask them to trade;
+// holding it next to a teammate who asked accepts. The name plate shows the hint and the progress.
+constexpr float  kTradePromptCm = 260.0f;
+constexpr double kTradeHoldSec = 0.8;
+struct TradePrompt {
+    int    cand = -1;          // the teammate the prompt is for
+    double start = -1;         // Interact held since
+    float  progress = 0;
+    bool   latch = false;      // fired: wait for Interact to be released
+};
+TradePrompt g_tp;
+double g_revivingSince = 0;   // when the teammate reviving us started (our own estimate of their progress)
+
+// First person: on our own screen "lying down" is the camera on the ground, tilted. Eased in and out; the camera's
+// own offsets are put back when we stand up (or the character changes).
+struct DownView {
+    SDK::UCameraComponent* cam = nullptr;
+    SDK::FVector baseLoc{};
+    SDK::FRotator baseRot{};
+    float blend = 0;
+    double lastAt = 0;
+} g_dv;
+
+void TickDownedView(double now) {
+    auto& s = S();
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    const double dt = g_dv.lastAt > 0 ? std::clamp(now - g_dv.lastAt, 0.0, 0.1) : 0.0;
+    g_dv.lastAt = now;
+    SDK::UCameraComponent* c = p ? p->FirstPersonCamera : nullptr;
+    if (!c || !ue::IsValid(c)) {
+        g_dv.cam = nullptr;
+        g_dv.blend = 0;
+        return;
+    }
+    const float target = s.localDowned && !p->IsDead ? 1.0f : 0.0f;
+    if (g_dv.cam != c) {
+        if (target == 0.0f) return;   // nothing to undo, nothing to do
+        g_dv.cam = c;
+        g_dv.baseLoc = c->RelativeLocation;
+        g_dv.baseRot = c->RelativeRotation;
+        g_dv.blend = 0;
+    }
+    const float speed = target > g_dv.blend ? 2.5f : 3.5f;   // fall in 0.4 s, get up a little faster
+    g_dv.blend = target > g_dv.blend ? std::min(target, g_dv.blend + speed * static_cast<float>(dt))
+                                     : std::max(target, g_dv.blend - speed * static_cast<float>(dt));
+    const float e = g_dv.blend * g_dv.blend * (3.0f - 2.0f * g_dv.blend);
+    SDK::FVector loc = g_dv.baseLoc;
+    loc.Z -= 125.0f * e;
+    SDK::FRotator rot = g_dv.baseRot;
+    rot.Roll += 30.0f * e;
+    SDK::FHitResult hit{};
+    c->K2_SetRelativeLocationAndRotation(loc, rot, false, &hit, true);
+    if (g_dv.blend <= 0.0f && target == 0.0f) g_dv.cam = nullptr;   // back where it was: the game owns it again
+}
+
+std::string UiNameOf(uint8_t slot);
+
+// The line (and bar) in the middle of the screen.
+void BuildPrompt(UiSnap& snap, double now) {
+    auto& s = S();
+    if (!snap.inSession || !snap.inGame) return;
+    if (s.localDowned) {
+        if (s.revivingMe >= 0) {
+            snap.prompt = ui::TrF("party.hud_being_revived", UiNameOf(static_cast<uint8_t>(s.revivingMe)));
+            snap.progress = static_cast<float>(std::clamp((now - g_revivingSince) / kReviveSec, 0.0, 1.0));
+        } else {
+            snap.prompt = ui::Tr("party.hud_down");
+        }
+        return;
+    }
+    if (s.reviveTarget >= 0) {
+        snap.prompt = ui::TrF("party.hud_reviving", UiNameOf(static_cast<uint8_t>(s.reviveTarget)));
+        snap.progress = s.reviveProgress;
+        return;
+    }
+    if (s.reviveCandidate >= 0) {
+        snap.prompt = ui::TrF("party.hud_hold_revive", UiNameOf(static_cast<uint8_t>(s.reviveCandidate)));
+        return;
+    }
+    if (g_tp.cand >= 0) {
+        const bool accept = s.trade.stage == TradeStage::Incoming && s.trade.peer == g_tp.cand;
+        snap.prompt = ui::TrF(accept ? "party.hud_hold_accept" : "party.hud_hold_trade", UiNameOf(static_cast<uint8_t>(g_tp.cand)));
+        if (g_tp.progress > 0) snap.progress = g_tp.progress;
+    }
+}
+
+void TickTradePrompt(double now) {
+    auto& s = S();
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    g_tp.cand = -1;
+    if (!p || p->IsDead || s.localDowned || !coop::InSession() || s.reviveCandidate >= 0 || s.trade.stage == TradeStage::Open ||
+        s.trade.stage == TradeStage::Outgoing || ui::IsMenuOpen()) {
+        g_tp.start = -1;
+        g_tp.progress = 0;
+        return;
+    }
+    float best = kTradePromptCm + 1;
+    for (const auto& m : coop::Members()) {
+        if (!m.present || m.isLocal || s.downed[m.slot]) continue;
+        if (s.trade.stage == TradeStage::Incoming && m.slot != s.trade.peer) continue;
+        net::Vec3f feet;
+        float yaw = 0;
+        if (!TeammateNear(m.slot, kTradePromptCm) || !playersync::RemotePose(m.slot, feet, yaw)) continue;
+        const float d = Dist(p->K2_GetActorLocation(), V(feet));
+        if (d < best) {
+            best = d;
+            g_tp.cand = m.slot;
+        }
+    }
+    const bool held = g_tp.cand >= 0 && InteractHeld(p);
+    if (!held) {
+        g_tp.latch = false;
+        g_tp.start = -1;
+        g_tp.progress = 0;
+        return;
+    }
+    if (g_tp.latch) return;
+    if (g_tp.start < 0) g_tp.start = now;
+    g_tp.progress = static_cast<float>(std::clamp((now - g_tp.start) / kTradeHoldSec, 0.0, 1.0));
+    if (g_tp.progress < 1.0f) return;
+    g_tp.latch = true;
+    g_tp.start = -1;
+    g_tp.progress = 0;
+    if (s.trade.stage == TradeStage::Incoming && s.trade.peer == g_tp.cand) TradeAnswer(true);
+    else if (s.trade.stage == TradeStage::None) TradeRequest(static_cast<uint8_t>(g_tp.cand));
+}
+
+std::string UiNameOf(uint8_t slot) { return NameOf(slot); }
+
 void TickTrade(double) {
     auto& s = S();
     Trade& t = s.trade;
@@ -1054,6 +1187,7 @@ void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
             if (!s.localDowned) return;
             if (m.arg == 1) {
                 s.revivingMe = static_cast<int8_t>(m.fromSlot);
+                g_revivingSince = Now();
                 ui::Toast(ui::TrF("party.being_revived", NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
             } else if (s.revivingMe == m.fromSlot) {
                 s.revivingMe = -1;
@@ -1093,6 +1227,8 @@ void Tick(float) {
     TickRevive(now);
     TickRest(now);
     TickTrade(now);
+    TickTradePrompt(now);
+    ui::SetInputCapture(s.trade.stage == TradeStage::Open);
 
     if (now - s.invAt > 0.5) {
         s.invAt = now;
@@ -1109,12 +1245,16 @@ void Tick(float) {
     snap.trade = s.trade;
     if (s.trade.peer < net::kMaxPlayers) snap.peerName = NameOf(s.trade.peer);
     snap.inv = s.inv;
+    TickDownedView(now);
+    BuildPrompt(snap, now);
     std::lock_guard lk(s.uiMu);
     s.ui = std::move(snap);
 }
 
 const ImVec4 kColOk(0.55f, 0.86f, 0.62f, 1.0f);
 const ImVec4 kColWarn(0.96f, 0.77f, 0.38f, 1.0f);
+
+void DrawTradeBody(const UiSnap& s);
 
 void DrawTab() {
     UiSnap s;
@@ -1157,6 +1297,12 @@ void DrawTab() {
         return;
     }
 
+    DrawTradeBody(s);
+}
+
+void DrawTradeBody(const UiSnap& s) {
+    using ui::Tr;
+    const Trade& t = s.trade;
     const std::string& peer = s.peerName;
     if (t.stage == TradeStage::Outgoing) {
         ImGui::TextWrapped("%s", ui::TrF("trade.waiting", peer).c_str());
@@ -1217,6 +1363,81 @@ void DrawTab() {
     ImGui::EndDisabled();
 }
 
+// The trade window, in the game's colours: dark panel, gold frame, cream text. Open trades only; a request shows as a
+// line at the bottom of the screen (no input taken, so nobody is stopped mid-fight).
+void DrawTradeHud() {
+    UiSnap s;
+    {
+        std::lock_guard lk(S().uiMu);
+        s = S().ui;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    if (s.inSession && !s.prompt.empty() && s.trade.stage != TradeStage::Open) {
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImFont* font = ImGui::GetFont();
+        const float fs = ImGui::GetFontSize() * 1.25f;
+        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s.prompt.c_str());
+        const float cx = io.DisplaySize.x * 0.5f, y = io.DisplaySize.y * 0.60f;
+        const float w = std::max(sz.x + 40.0f, 280.0f);
+        const float h = sz.y + (s.progress >= 0 ? 34.0f : 18.0f);
+        const ImVec2 p0(cx - w * 0.5f, y), p1(cx + w * 0.5f, y + h);
+        dl->AddRectFilled(p0, p1, IM_COL32(18, 13, 22, 210));
+        dl->AddRect(p0, p1, IM_COL32(217, 180, 90, 255), 0.0f, 0, 2.0f);
+        dl->AddText(font, fs, ImVec2(cx - sz.x * 0.5f + 1, y + 10.0f), IM_COL32(0, 0, 0, 200), s.prompt.c_str());
+        dl->AddText(font, fs, ImVec2(cx - sz.x * 0.5f, y + 9.0f), IM_COL32(245, 234, 210, 255), s.prompt.c_str());
+        if (s.progress >= 0) {
+            const ImVec2 b0(p0.x + 16.0f, p1.y - 18.0f), b1(p1.x - 16.0f, p1.y - 10.0f);
+            dl->AddRectFilled(b0, b1, IM_COL32(60, 46, 30, 255));
+            dl->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * std::clamp(s.progress, 0.0f, 1.0f), b1.y), IM_COL32(230, 190, 90, 255));
+        }
+    }
+    const Trade& t = s.trade;
+    if (!s.inSession || t.stage == TradeStage::None) return;
+    if (t.stage != TradeStage::Open) {
+        const std::string line = t.stage == TradeStage::Incoming ? ui::TrF("trade.hud_incoming", s.peerName)
+                                                                 : ui::TrF("trade.hud_waiting", s.peerName);
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        const ImVec2 sz = ImGui::CalcTextSize(line.c_str());
+        const ImVec2 p0(io.DisplaySize.x * 0.5f - sz.x * 0.5f - 18.0f, io.DisplaySize.y * 0.80f);
+        const ImVec2 p1(p0.x + sz.x + 36.0f, p0.y + sz.y + 18.0f);
+        dl->AddRectFilled(p0, p1, IM_COL32(18, 13, 22, 225));
+        dl->AddRect(p0, p1, IM_COL32(217, 180, 90, 255), 0.0f, 0, 2.0f);
+        dl->AddText(ImVec2(p0.x + 18.0f, p0.y + 9.0f), IM_COL32(245, 234, 210, 255), line.c_str());
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.07f, 0.05f, 0.09f, 0.97f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.85f, 0.71f, 0.35f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.96f, 0.92f, 0.82f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.24f, 0.17f, 0.10f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.45f, 0.32f, 0.14f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.62f, 0.47f, 0.18f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_TableBorderLight, ImVec4(0.85f, 0.71f, 0.35f, 0.5f));
+    ImGui::PushStyleColor(ImGuiCol_Separator, ImVec4(0.85f, 0.71f, 0.35f, 0.6f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 2.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22.0f, 18.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 8.0f));
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f), ImVec2(io.DisplaySize.x * 0.8f, io.DisplaySize.y * 0.8f));
+    if (ImGui::Begin("##qd_trade", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::SetWindowFontScale(1.35f);
+        ImGui::TextColored(ImVec4(0.92f, 0.78f, 0.40f, 1.0f), "%s", ui::TrF("trade.title", s.peerName).c_str());
+        ImGui::SetWindowFontScale(1.1f);
+        ImGui::Separator();
+        DrawTradeBody(s);
+        ImGui::Spacing();
+        ImGui::TextDisabled("%s", ui::Tr("trade.esc_hint"));
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) gamethread::Post([] { TradeCancel(); });
+        ImGui::SetWindowFontScale(1.0f);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(5);
+    ImGui::PopStyleColor(8);
+}
+
 }  // namespace
 
 bool PartyLocalDowned() { return S().localDowned; }
@@ -1224,9 +1445,8 @@ bool PartySlotDowned(uint8_t slot) { return slot < net::kMaxPlayers && S().downe
 
 std::string PartyLabelSuffix(uint8_t slot) {
     auto& s = S();
-    if (slot >= net::kMaxPlayers || !s.downed[slot]) return {};
-    if (s.reviveTarget == slot) return ui::TrF("party.label_reviving", static_cast<int>(s.reviveProgress * 100.0f));
-    if (s.reviveCandidate == slot && !s.localDowned) return ui::Tr("party.label_hold");
+    if (slot >= net::kMaxPlayers) return {};
+    if (!s.downed[slot]) return {};
     return ui::Tr("party.label_down");
 }
 
@@ -1282,6 +1502,7 @@ void PartyInit() {
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:AddItemToInventory", OnItemAdded));
     s.ticker = gamethread::AddTicker("party", Tick);
     ui::AddMenuTab("party", "tab.party", DrawTab, 20);
+    ui::AddHudDrawer("trade", DrawTradeHud);
     QD_INFO(kTag, "party features ready (revive, party rest, trading)");
 }
 

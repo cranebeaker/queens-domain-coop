@@ -33,6 +33,9 @@ Play Game and picks the save (or a new game), and everybody starts together. Pre
 - **Loot:** drops are rolled once and picked up once; pots, triggers and cutscenes play for everyone.
 - **Party (F5, Party tab):** go down instead of dying when a teammate is near and get revived, rest at a checkpoint
   together, share saves, trade consumables.
+- **Co-op characters:** the host keeps every friend's character. A friend never picks a save: they join and play
+  their co-op character in the host's world, next to the host. Their own saves are not touched.
+- **Weapons:** a weapon one player picks up or is given goes to everyone; shop purchases stay with the buyer.
 - **Difficulty (Co-op tab, host):** Normal, Hard or custom enemy health and damage per extra player.
 
 ## How it is tested

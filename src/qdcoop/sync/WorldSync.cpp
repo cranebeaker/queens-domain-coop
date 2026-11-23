@@ -616,6 +616,11 @@ void Tick(float dt) {
 
     if (host && s.lastSave == nullptr) {
         s.known = cur;   // the host's world is the session's starting point
+        // a new round (or the session's first look): everyone gets this world in full
+        std::vector<net::FlagValue> all;
+        Flags(s.known, nullptr, all);
+        SendChunks(all, true, [](const std::vector<uint8_t>& b) { coop::Broadcast(net::Channel::Reliable, b); });
+        QD_INFO(kTag, "sent the full world state ({} entries) to everyone", all.size());
     } else if (reloaded || s.pending || reindexed) {
         // new save object (death reload), entries that arrived while nothing could write them, or a periodic check
         Reassert(save, cur, !(reloaded || s.pending));
@@ -667,6 +672,20 @@ void OnMember(const coop::Member& m, bool joined) {
 }  // namespace
 
 bool WorldSyncReplaying() { return S().replaying; }
+
+void WorldSyncNewRound() {
+    auto& s = S();
+    s.known = Snapshot{};
+    s.haveFull = false;
+    s.lastSave = nullptr;
+    s.lastWorld = nullptr;
+    s.pending = false;
+    s.taken.clear();
+    s.dropsSeen.clear();
+    s.eventsOut.clear();
+    s.pollIn = 0;
+    QD_INFO(kTag, "new round: the last game's shared world is forgotten");
+}
 
 bool WorldSyncReplayedRecently(const void* obj, double seconds) {
     auto& s = S();

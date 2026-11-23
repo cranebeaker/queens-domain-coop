@@ -26,6 +26,8 @@
 #include "qdcoop/core/Unreal.h"
 #include "qdcoop/net/Protocol.h"
 #include "qdcoop/sync/Coop.h"
+#include "qdcoop/sync/CoopCharacter.h"
+#include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
 
@@ -63,6 +65,7 @@ struct State {
     float pendingAge = 0;
 
     bool doingStart = false;     // our own calls into the menu: the hooks must not tell anyone
+    bool joinedRunning = false;  // this menu visit already booted into the host's running game
     int lastSelected = -1;       // the slot the host last selected on the menu
     bool lastSelectedEmpty = false;   // it had no save when it was picked (a new game)
     bool newGameRunning = false;      // inside NewGameOnNewSlotConfirmed on this machine
@@ -227,6 +230,7 @@ void HostStarts(int slot, bool isNew) {
     m.readyMask = s.readyMask;
     m.saveSlot = static_cast<uint8_t>(slot < 0 || slot >= 16 ? 0 : slot);
     m.isNew = isNew ? 1 : 0;
+    if (isNew) CharacterHostNewGame(slot);
     coop::Broadcast(net::Channel::Reliable, net::Encode(m));
     QD_INFO(kTag, "host starts: slot {} ({})", slot, isNew ? "new game" : "save");
 }
@@ -274,6 +278,7 @@ void Tick(float dt) {
     const bool host = coop::IsHost();
 
     if (s.onTitle && !s.prevOnTitle) {   // back at (or arriving at) the main menu: a fresh round
+        WorldSyncNewRound();
         if (!s.pending) {
             s.started = false;
             s.readyMask = 0;
@@ -294,14 +299,24 @@ void Tick(float dt) {
     }
 
     // a Start came: follow it as soon as the menu is up
-    if (s.pending && title) StartHere(title, s.pendingSlot, s.pendingNew);
+    if (s.pending && title) {
+        s.pending = false;
+        CharacterBoot(s.pendingNew);
+    }
+    // joining a host who is already playing: straight into the co-op character, next to the host
+    if (!host && session && title && s.started && !s.pending && !CharacterBooting() && !s.joinedRunning) {
+        s.joinedRunning = true;
+        ui::Toast(ui::TrF("lobby.joining_running", NameOf(0)), ui::ToastKind::Info, 5.0f);
+        CharacterBoot(false);
+    }
+    if (!session || !title) s.joinedRunning = false;
     if (s.pending && s.pendingAge > kPendingGiveUpSec) {
         QD_WARN(kTag, "the host's start could not be followed (no main menu after {:.0f} s)", s.pendingAge);
         s.pending = false;
     }
 
     const bool waiting = s.onTitle && session && !s.started;
-    const bool hold = waiting && (!host || !AllClientsReady());
+    const bool hold = (s.onTitle && session && !host) || (waiting && host && !AllClientsReady());
     if (title && (hold || s.gated)) {
         SetButtons(title, !hold);
         s.gated = hold;

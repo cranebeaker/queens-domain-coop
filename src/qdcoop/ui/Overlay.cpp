@@ -11,6 +11,7 @@
 
 #include "qdcoop/core/Config.h"
 #include "qdcoop/core/Log.h"
+#include "qdcoop/ui/GameMouse.h"
 #include "qdcoop/ui/I18n.h"
 
 #include <Windows.h>
@@ -82,6 +83,9 @@ std::atomic<UINT>       g_menuVk{VK_F5};
 std::atomic<bool>       g_menuOpen{false};      // input captured (F5 menu OR ~ console is open)
 std::atomic<bool>       g_panelMenu{false};     // F5 menu visible
 std::atomic<bool>       g_panelConsole{false};  // ~ console visible
+std::atomic<bool>       g_panelModule{false};   // a module's pop-up window wants the input (SetInputCapture)
+std::mutex                                                   g_hudMx;
+std::vector<std::pair<std::string, std::function<void()>>>   g_hud;
 
 #if QD_DEV
 std::mutex                                     g_consoleMx;
@@ -693,6 +697,15 @@ void RenderFrame(IDXGISwapChain* sc) {
     ImGui::NewFrame();
     DrawWorldLabels();
     DrawToasts();
+    {
+        std::vector<std::pair<std::string, std::function<void()>>> hud;
+        {
+            std::lock_guard lk(g_hudMx);
+            hud = g_hud;
+        }
+        for (auto& h : hud)
+            if (h.second) h.second();
+    }
     if (g_panelMenu.load()) DrawMenu();
 #if QD_DEV
     if (g_panelConsole.load()) DrawConsole();
@@ -884,15 +897,26 @@ void ConsolePrint(const std::string& utf8) {
 #endif   // QD_DEV
 
 void ApplyPanels() {
-    const bool open = g_panelMenu.load() || g_panelConsole.load();
+    const bool open = g_panelMenu.load() || g_panelConsole.load() || g_panelModule.load();
     const bool was = g_menuOpen.exchange(open);
     if (was == open) return;
+    gamethread::Post([open] { GameMouseForOverlay(open); });
     HWND hwnd = g_targetHwnd.load();
     if (!open) {
         std::lock_guard lk(g_inputMx);
         g_inputQueue.push_back({hwnd, kMsgFocusReset, 0, 0});
     }
     if (hwnd && g_wndProcInstalled) PostMessageW(hwnd, kMsgImeToggle, open ? 1 : 0, 0);   // IME work must run on the window thread
+}
+
+void AddHudDrawer(const char* id, std::function<void()> draw) {
+    std::lock_guard lk(g_hudMx);
+    g_hud.emplace_back(id ? id : "", std::move(draw));
+}
+
+void SetInputCapture(bool on) {
+    if (g_panelModule.exchange(on) == on) return;
+    ApplyPanels();
 }
 
 void AddMenuTab(const char* id, const char* title, std::function<void()> draw, int order) {

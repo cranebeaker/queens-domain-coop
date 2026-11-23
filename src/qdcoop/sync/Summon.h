@@ -6,5 +6,7 @@ namespace qd::sync {
 
 void SummonInit();       // menu tab + ticker; call after ui::Init
 void SummonShutdown();
+// Client: teleport next to the host now (as the Teleport tab does). Game thread.
+void SummonToHost();
 
 }  // namespace qd::sync

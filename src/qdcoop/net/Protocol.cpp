@@ -580,4 +580,31 @@ bool Decode(const uint8_t* data, size_t size, MsgLobby& out) {
     });
 }
 
+std::vector<uint8_t> Encode(const MsgCharacter& m) {
+    ByteWriter w = Begin(MsgType::Character, 16 + m.data.size());
+    w.U8(static_cast<uint8_t>(m.kind));
+    w.U8(m.purpose);
+    w.U32(m.id);
+    w.U32(m.total);
+    w.U32(m.offset);
+    const size_t n = m.data.size() <= 1024 ? m.data.size() : 0;
+    w.U32(static_cast<uint32_t>(n));
+    for (size_t i = 0; i < n; ++i) w.U8(m.data[i]);
+    return w.Take();
+}
+bool Decode(const uint8_t* data, size_t size, MsgCharacter& out) {
+    return DecodeInto(data, size, MsgType::Character, out, [](ByteReader& r, MsgCharacter& m) {
+        uint8_t kind = 0;
+        uint32_t n = 0;
+        if (!(r.U8(kind) && kind >= 1 && kind <= 5 && r.U8(m.purpose) && m.purpose <= 1 && r.U32(m.id) && r.U32(m.total) &&
+              m.total <= kMaxCharacterBytes && r.U32(m.offset) && r.U32(n) && n <= 1024))
+            return false;
+        m.kind = static_cast<CharacterKind>(kind);
+        m.data.resize(n);
+        for (auto& b : m.data)
+            if (!r.U8(b)) return false;
+        return true;
+    });
+}
+
 }  // namespace qd::net
