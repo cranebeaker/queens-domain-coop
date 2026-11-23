@@ -10,5 +10,8 @@ namespace qd::ui {
 void CoopPageInit();                       // after TitleButtonInit: click hook + ticker
 void CoopPageOpen(SDK::UObject* title);    // the main menu's Co-op button was pressed
 bool CoopPageIsOpen();
+#if QD_DEV
+void CoopPageDebugOpen();   // dev console "page": open the page on the main menu (lab screenshots)
+#endif
 
 }  // namespace qd::ui

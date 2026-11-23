@@ -14,6 +14,7 @@
 #include "SDK/CommonUI_parameters.hpp"
 #include "SDK/TitleScreenUI_classes.hpp"
 #include "SDK/FS_Button_classes.hpp"
+#include "SDK/Slate_structs.hpp"
 
 #include "qdcoop/ui/CoopPage.h"
 
@@ -64,7 +65,10 @@ struct Page {
     std::vector<SDK::UWidget*> hidden;        // the menu's own entries, collapsed while the page is open
     SDK::UWidget* logo = nullptr;             // the Queen's Domain logo, hidden while the page is open
     SDK::ESlateVisibility logoWas = SDK::ESlateVisibility::Visible;
-    std::vector<SDK::UWidget*> added;         // the page's items in the column
+    std::vector<SDK::UWidget*> added;         // the page's items
+    SDK::UBorder* frame = nullptr;            // gold edge, in the menu column
+    SDK::UVerticalBox* inner = nullptr;       // the page's own column, on a dark panel inside the frame
+    SDK::UUserWidget* layer = nullptr;        // the page's own screen layer (centred, above the menu)
     std::unordered_map<const SDK::UObject*, std::function<void()>> actions;
     SDK::UEditableTextBox* nameBox = nullptr;
     std::string shown;                        // what the page shows (rebuilt when it changes)
@@ -214,25 +218,96 @@ SDK::UFS_Button_C* TextButton(const std::string& text, std::function<void()> act
     return b;
 }
 
-void Add(SDK::UWidget* w) {
+void Add(SDK::UWidget* w, float gapAbove = 6.0f) {
     auto& p = P();
-    if (!w || !p.box) return;
+    if (!w || !p.inner) return;
     SDK::Params::VerticalBox_AddChildToVerticalBox ad{};
     ad.Content = w;
-    if (!Call(p.box, "AddChildToVerticalBox", ad) || !ad.ReturnValue) return;
-    SDK::Params::VerticalBoxSlot_SetSize ss{};
-    ss.InSize = p.size;
-    Call(ad.ReturnValue, "SetSize", ss);
+    if (!Call(p.inner, "AddChildToVerticalBox", ad) || !ad.ReturnValue) return;
     SDK::Params::VerticalBoxSlot_SetPadding sp{};
-    sp.InPadding = p.pad;
+    sp.InPadding = SDK::FMargin{0.0f, gapAbove, 0.0f, 0.0f};
     Call(ad.ReturnValue, "SetPadding", sp);
     SDK::Params::VerticalBoxSlot_SetHorizontalAlignment sh{};
-    sh.InHorizontalAlignment = p.h;
+    sh.InHorizontalAlignment = SDK::EHorizontalAlignment::HAlign_Center;
     Call(ad.ReturnValue, "SetHorizontalAlignment", sh);
-    SDK::Params::VerticalBoxSlot_SetVerticalAlignment sv{};
-    sv.InVerticalAlignment = p.v;
-    Call(ad.ReturnValue, "SetVerticalAlignment", sv);
     p.added.push_back(w);
+}
+
+// The frame in the menu column: a gold edge around a dark, slightly see-through panel holding the page's column.
+void MakeFrame() {
+    auto& p = P();
+    SDK::UObject* tree = p.title->WidgetTree ? static_cast<SDK::UObject*>(p.title->WidgetTree) : static_cast<SDK::UObject*>(p.title);
+    auto* frame = static_cast<SDK::UBorder*>(SDK::UGameplayStatics::SpawnObject(SDK::UBorder::StaticClass(), tree));
+    auto* panel = static_cast<SDK::UBorder*>(SDK::UGameplayStatics::SpawnObject(SDK::UBorder::StaticClass(), tree));
+    auto* inner = static_cast<SDK::UVerticalBox*>(SDK::UGameplayStatics::SpawnObject(SDK::UVerticalBox::StaticClass(), tree));
+    if (!frame || !panel || !inner) return;
+    SDK::Params::Border_SetBrushColor gold{};
+    gold.InBrushColor = SDK::FLinearColor{0.72f, 0.56f, 0.24f, 0.95f};
+    Call(frame, "SetBrushColor", gold);
+    SDK::Params::Border_SetPadding edge{};
+    edge.InPadding = SDK::FMargin{2.0f, 2.0f, 2.0f, 2.0f};
+    Call(frame, "SetPadding", edge);
+    SDK::Params::Border_SetBrushColor dark{};
+    dark.InBrushColor = SDK::FLinearColor{0.004f, 0.003f, 0.006f, 0.9f};
+    Call(panel, "SetBrushColor", dark);
+    SDK::Params::Border_SetPadding room{};
+    room.InPadding = SDK::FMargin{36.0f, 18.0f, 36.0f, 22.0f};
+    Call(panel, "SetPadding", room);
+    SDK::Params::ContentWidget_SetContent c1{};
+    c1.Content = inner;
+    Call(panel, "SetContent", c1);
+    SDK::Params::ContentWidget_SetContent c2{};
+    c2.Content = panel;
+    Call(frame, "SetContent", c2);
+    // centred on the whole screen: a layer of its own (a user widget on the viewport whose root canvas is the window)
+    bool placed = false;
+    SDK::Params::WidgetBlueprintLibrary_Create cr{};
+    cr.WorldContextObject = p.title;
+    cr.WidgetType = SDK::UUserWidget::StaticClass();
+    cr.OwningPlayer = ue::LocalController();
+    if (Call(SDK::UWidgetBlueprintLibrary::GetDefaultObj(), "Create", cr) && cr.ReturnValue) {
+        SDK::UUserWidget* layer = cr.ReturnValue;
+        if (!layer->WidgetTree)
+            layer->WidgetTree = static_cast<SDK::UWidgetTree*>(SDK::UGameplayStatics::SpawnObject(SDK::UWidgetTree::StaticClass(), layer));
+        auto* canvas = layer->WidgetTree
+                           ? static_cast<SDK::UCanvasPanel*>(SDK::UGameplayStatics::SpawnObject(SDK::UCanvasPanel::StaticClass(), layer->WidgetTree))
+                           : nullptr;
+        if (canvas) {
+            layer->WidgetTree->RootWidget = canvas;
+            SDK::Params::CanvasPanel_AddChildToCanvas ac{};
+            ac.Content = frame;
+            if (Call(canvas, "AddChildToCanvas", ac) && ac.ReturnValue) {
+                SDK::Params::CanvasPanelSlot_SetAnchors an{};
+                an.InAnchors.Minimum = SDK::FVector2D{0.5f, 0.5f};
+                an.InAnchors.Maximum = SDK::FVector2D{0.5f, 0.5f};
+                Call(ac.ReturnValue, "SetAnchors", an);
+                SDK::Params::CanvasPanelSlot_SetAlignment al{};
+                al.InAlignment = SDK::FVector2D{0.5f, 0.5f};
+                Call(ac.ReturnValue, "SetAlignment", al);
+                SDK::Params::CanvasPanelSlot_SetPosition po{};
+                po.InPosition = SDK::FVector2D{0.0f, 0.0f};
+                Call(ac.ReturnValue, "SetPosition", po);
+                SDK::Params::CanvasPanelSlot_SetAutoSize as{};
+                as.InbAutoSize = true;
+                Call(ac.ReturnValue, "SetAutoSize", as);
+                SDK::Params::UserWidget_AddToViewport av{};
+                av.ZOrder = 50;
+                Call(layer, "AddToViewport", av);
+                p.layer = layer;
+                placed = true;
+            }
+        }
+    }
+    if (!placed) {
+        SDK::Params::VerticalBox_AddChildToVerticalBox ad{};
+        ad.Content = frame;
+        if (!Call(p.box, "AddChildToVerticalBox", ad) || !ad.ReturnValue) return;
+        SDK::Params::VerticalBoxSlot_SetHorizontalAlignment sh{};
+        sh.InHorizontalAlignment = SDK::EHorizontalAlignment::HAlign_Center;
+        Call(ad.ReturnValue, "SetHorizontalAlignment", sh);
+    }
+    p.frame = frame;
+    p.inner = inner;
 }
 
 void AddText(const std::string& text, float scale = 1.0f, bool dim = false) {
@@ -298,7 +373,7 @@ void RowAdd(SDK::UHorizontalBox* row, SDK::UWidget* w, float padRight, bool fill
 }
 
 const SDK::FLinearColor kReady{0.45f, 0.9f, 0.5f, 1.0f};
-const SDK::FLinearColor kWaiting{0.98f, 0.75f, 0.3f, 1.0f};
+const SDK::FLinearColor kWaiting{0.95f, 0.32f, 0.18f, 1.0f};
 const SDK::FLinearColor kHostCol{1.0f, 0.84f, 0.42f, 1.0f};
 const SDK::FLinearColor kPlaying{0.7f, 0.68f, 0.72f, 1.0f};
 
@@ -316,7 +391,23 @@ void AddPlayerRow(const sync::LobbyRow& r, const sync::LobbyView& v) {
     else if (!v.onTitle || v.started) { key = "page.badge_playing"; col = &kPlaying; }
     else if (r.ready) { key = "page.badge_ready"; col = &kReady; }
     else { key = "page.badge_waiting"; col = &kWaiting; }
-    RowAdd(row, NewText(TreeOf(P().title), Tr(key), 0.75f, false, col), 0.0f);
+    // the badge: a coloured pill (the game's text style keeps its own colour, so the colour is the pill's)
+    SDK::UCommonTextBlock* badge = NewText(TreeOf(P().title), Tr(key), 0.7f);
+    auto* pill = static_cast<SDK::UBorder*>(SDK::UGameplayStatics::SpawnObject(SDK::UBorder::StaticClass(), TreeOf(P().title)));
+    if (pill && badge) {
+        SDK::Params::Border_SetBrushColor bc{};
+        bc.InBrushColor = SDK::FLinearColor{col->R * 0.45f, col->G * 0.45f, col->B * 0.45f, 1.0f};
+        Call(pill, "SetBrushColor", bc);
+        SDK::Params::Border_SetPadding bp{};
+        bp.InPadding = SDK::FMargin{10.0f, 2.0f, 10.0f, 2.0f};
+        Call(pill, "SetPadding", bp);
+        SDK::Params::ContentWidget_SetContent sc{};
+        sc.Content = badge;
+        Call(pill, "SetContent", sc);
+        RowAdd(row, pill, 0.0f);
+    } else {
+        RowAdd(row, badge, 0.0f);
+    }
     Add(row);
 }
 
@@ -393,11 +484,9 @@ std::string StateKey() {
 
 void Clear() {
     auto& p = P();
-    for (SDK::UWidget* w : p.added) {
-        if (!w || !ue::IsValid(w) || !p.box || !ue::IsValid(p.box)) continue;
-        SDK::Params::PanelWidget_RemoveChild rm{};
-        rm.Content = w;
-        Call(p.box, "RemoveChild", rm);
+    if (p.inner && ue::IsValid(p.inner)) {
+        char none = 0;
+        Call(p.inner, "ClearChildren", none);
     }
     p.added.clear();
     p.actions.clear();
@@ -424,7 +513,7 @@ void Build() {
     const bool idle = st == net::SessionState::Idle || st == net::SessionState::Failed;
     const sync::LobbyView v = sync::LobbyViewNow();
 
-    AddText(Tr("page.title"), 1.25f);
+    AddText(Tr("page.title"), 1.3f);
 
     if (!coop::CoopAllowed()) {
         AddText(Tr(coop::CoopDisabled() ? "own.failed" : "coop.verifying"), 0.7f, true);
@@ -499,7 +588,7 @@ void Build() {
 
     // your look: the knight's faces in a row, the chosen one bright
     {
-        AddText(Tr("page.your_look"), 0.7f, true);
+        Add(NewText(TreeOf(p.title), Tr("page.your_look"), 0.7f, true), 18.0f);
         SDK::UObject* outer = p.title->WidgetTree ? static_cast<SDK::UObject*>(p.title->WidgetTree) : static_cast<SDK::UObject*>(p.title);
         if (SDK::UObject* o = SDK::UGameplayStatics::SpawnObject(SDK::UHorizontalBox::StaticClass(), outer)) {
             auto* row = static_cast<SDK::UHorizontalBox*>(o);
@@ -538,7 +627,7 @@ void Build() {
         }
     }
 
-    Add(TextButton(Tr("page.back"), [] { Close(); }));
+    Add(TextButton(Tr("page.back"), [] { Close(); }), 18.0f);
     p.shown = StateKey();
 }
 
@@ -546,6 +635,17 @@ void Close() {
     auto& p = P();
     if (!p.open) return;
     Clear();
+    if (p.frame && ue::IsValid(p.frame)) {
+        char none = 0;
+        Call(p.frame, "RemoveFromParent", none);
+    }
+    if (p.layer && ue::IsValid(p.layer)) {
+        char none = 0;
+        Call(p.layer, "RemoveFromParent", none);
+    }
+    p.layer = nullptr;
+    p.frame = nullptr;
+    p.inner = nullptr;
     for (SDK::UWidget* w : p.hidden) SetVisible(w, true);
     p.hidden.clear();
     MakeRoom(false);
@@ -556,12 +656,19 @@ void Close() {
 void Tick(float dt) {
     auto& p = P();
     if (!p.open) return;
-    if (!p.title || !ue::IsValid(p.title) || !p.box || !ue::IsValid(p.box)) {   // the menu went away (a game started)
+    if (!p.title || !ue::IsValid(p.title) || !p.box || !ue::IsValid(p.box) || !p.inner || !ue::IsValid(p.inner)) {   // the menu went away (a game started)
         p.open = false;
         p.added.clear();
         p.hidden.clear();
         p.actions.clear();
         p.nameBox = nullptr;
+        p.frame = nullptr;
+        p.inner = nullptr;
+        if (p.layer && ue::IsValid(p.layer)) {   // the page's layer must not stay over the game
+            char none = 0;
+            Call(p.layer, "RemoveFromParent", none);
+        }
+        p.layer = nullptr;
         return;
     }
     p.lobbiesIn -= dt;
@@ -603,7 +710,13 @@ void CoopPageOpen(SDK::UObject* titleObj) {
         SetVisible(sl->Content, false);
     }
     p.open = true;
+    MakeFrame();
     MakeRoom(true);
+    {   // the column itself stays where it is (it is empty while the page is open)
+        SDK::Params::Widget_SetRenderTranslation tr{};
+        tr.Translation = SDK::FVector2D{0.0f, 0.0f};
+        Call(p.box, "SetRenderTranslation", tr);
+    }
     p.lobbiesIn = 0;
     if (coop::SessionReady() && coop::CoopAllowed()) coop::Session().RefreshFriendLobbies();
     Build();
@@ -611,6 +724,25 @@ void CoopPageOpen(SDK::UObject* titleObj) {
 }
 
 bool CoopPageIsOpen() { return P().open; }
+
+#if QD_DEV
+void CoopPageDebugOpen() {
+    SDK::UClass* cls = ue::FindClass("/Game/UI/Title/TitleScreenUI.TitleScreenUI_C");
+    auto& objs = SDK::UObject::GObjects;
+    for (int i = 0; cls && i < objs->Num(); ++i) {
+        SDK::UObject* o = objs->GetByIndex(i);
+        if (o && !o->IsDefaultObject() && o->IsA(cls) && ue::IsValid(o)) {
+            char none = 0;   // past a first run's intro and language screen, as the lab's newgame does
+            Call(o, "SkipIntroSplashes", none);
+            Call(o, "ConfirmLanguage", none);
+            if (P().open) Close();
+            gamethread::Post([o] { if (ue::IsValid(o)) CoopPageOpen(o); });
+            return;
+        }
+    }
+    QD_WARN(kTag, "page: no main menu");
+}
+#endif
 
 void CoopPageInit() {
     auto& p = P();
