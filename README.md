@@ -1,62 +1,61 @@
-# Knights' Domain — source
+# Queen's Domain Co-op
 
-Source code of the two DLLs that make up Knights' Domain. Release builds are published at
-[Lotisphere/KnightsDomain](https://github.com/Lotisphere/KnightsDomain).
+Play the whole of Queen's Domain together, 2 to 4 players over Steam. The world, every boss fight, enemy attacks,
+loot and story progress are shared by the party.
 
-## Layout
+This is the Co-op Anything build of **[Knights' Domain](https://github.com/Lotisphere/KnightsDomain) by Mangolotis**,
+the co-op mod this is built on. It is published here with Mangolotis's permission. Knights' Domain already synced
+players and enemies; this build adds the rest of the game, and the same changes are offered back to Knights' Domain in
+[Lotisphere/KnightsDomain#3](https://github.com/Lotisphere/KnightsDomain/pull/3). All credit for the original mod goes
+to Mangolotis.
 
-| Path | Contents |
-| --- | --- |
-| `src/proxy` | Loader DLL. Forwards the XInput exports to the system library and loads the mod DLL from a worker thread. |
-| `src/qdcoop/core` | Start-up, configuration, logging, function hooks, game-thread task queue, engine helpers, run-time engine address lookup, Steam ownership check, updater. |
-| `src/qdcoop/net` | Session and peer liveness, wire protocol codec, Steam transport, UDP loopback transport for development. No engine dependency. |
-| `src/qdcoop/sync` | State replication built on the net layer: sampling, snapshots, interpolation, ownership hand-over. |
-| `src/qdcoop/ui` | Overlay rendering and input capture, menu pages, string tables (English, Chinese, Japanese). |
-| `src/qdcoop/debug` | Development-only command file and smoke test. Not compiled into release builds. |
-| `src/tests` | Unit tests for the net layer and the motion math. No test framework. |
-| `vendor` | Third-party libraries, each under its own licence (see the licence file in each folder). |
+## Install
 
-## Technology
+1. Download `QueensDomainCoop-<version>.zip` from [Releases](https://github.com/cranebeaker/queens-domain-coop/releases/latest).
+2. Open your Queen's Domain folder (Steam: right click the game, Manage, Browse local files) and go to
+   `QueensDomain\Binaries\Win64`.
+3. Unzip there, so that `xinput1_3.dll` sits next to the game's exe and `KnightsDomain.dll` is in the `KnightsDomain`
+   folder. Replace the files if Knights' Domain was installed before.
+4. Start the game from Steam. Every player needs the same version of this build; it updates itself from this repo.
 
-- C++23, MSVC, CMake. Static CRT, so the DLLs need no runtime redistributable.
-- [MinHook](https://github.com/TsudaKageyu/minhook) for inline function hooks.
-- [Dear ImGui](https://github.com/ocornut/imgui) with the Direct3D 11 and Win32 backends for the overlay, drawn from
-  hooks on `IDXGISwapChain::Present` and `ResizeBuffers`.
-- Steamworks lobbies and `ISteamNetworkingMessages` through the flat C API, resolved at run time from the
-  `steam_api64.dll` the game already ships. The Steamworks SDK is not linked.
-- A binary little-endian wire protocol with a version handshake, reliable and unreliable channels, and a snapshot
-  rate that adapts to how much has changed.
-- WinHTTP and BCrypt (SHA-256) for the update check and download. No third-party network or crypto library.
-- WinTrust for the Authenticode check of `steam_api64.dll`.
-- [nlohmann/json](https://github.com/nlohmann/json) for the configuration file and the update manifest.
+Host: Play, Co-op, create a lobby and invite friends through Steam. Press F5 in game for the co-op window.
+
+## What is shared
+
+- **World:** chests, doors, levers, gates, lifts, secret walls, barricades, pickups, save points, teleporters, the
+  checkpoint and story counters, in every area. A player who joins gets the host's world.
+- **Bosses:** every boss and miniboss wakes once for the whole party, with its arena locks, adds, attacks, rewards and
+  defeat shared. Bosses pick their target by threat, so the player doing the damage draws the boss.
+- **Enemies:** projectiles, area attacks and fire puddles exist for every player and hurt everyone they touch. Enemies
+  near the party are split between players instead of all going for one.
+- **Loot:** drops are rolled once and picked up once; pots, triggers and cutscenes play for everyone.
+- **Party (F5, Party tab):** go down instead of dying when a teammate is near and get revived, rest at a checkpoint
+  together, share saves, trade consumables.
+- **Difficulty (Co-op tab, host):** Normal, Hard or custom enemy health and damage per extra player.
+
+## How it is tested
+
+Two copies of the game run side by side and a test rig reads each copy's save, actors and health:
+[cranebeaker/queens-domain-coop-lab](https://github.com/cranebeaker/queens-domain-coop-lab). The 53 scenarios cover
+the world, loot, every boss started by host and by client, party features, targeting and difficulty, plus a lag run
+at 50 to 150 ms round trip with 2 % packet loss.
 
 ## Building
 
-Requirements: Visual Studio 2022 with the C++ workload, CMake 3.25 or newer, and the Windows 10/11 SDK.
-
-The build also needs C++ SDK headers for the game. They are not part of this repository. Pass their location with
-`QD_SDK` (the folder that contains `SDK.hpp` and the `SDK` directory); without it the build looks in `sdk/CppSDK`
-next to `src`.
-
-The mod finds the engine addresses at run time and writes them into the SDK's `Offsets` table, so that table has to
-be made of variables. Two edits in the SDK headers, once per set of headers:
-
-- `SDK/Basic.hpp`, namespace `Offsets`: change `constexpr int32` to `inline int32` for `GObjects`, `AppendString`,
-  `GNames`, `GWorld`, `ProcessEvent` and `FindFunctionChecked` (leave `ProcessEventIdx` as it is).
-- `SDK/Engine_functions.cpp`: change `if constexpr (Offsets::GWorld != 0)` to `if (Offsets::GWorld != 0)`.
-
-CMake stops with a message when the first edit is missing.
+Visual Studio 2022 with the C++ workload, CMake 3.25 or newer and the Windows SDK. The build needs C++ SDK headers for
+the game (Dumper-7), passed with `QD_SDK`; see the lab repo's `runner/setup.py` for the two header edits the mod needs.
 
 ```
 cmake -S src -B build -G "Visual Studio 17 2022" -A x64 -DQD_SDK=<path to the SDK headers>
 cmake --build build --config Release
 ```
 
-Add `-DQD_DEV_BUILD=ON` when configuring for the development flavour, which enables the debug console, the
-development commands and the UDP loopback transport.
+`-DQD_DEV_BUILD=ON` gives the development flavour (debug console, test commands, UDP transport) the lab rig uses.
 
-Outputs in `build/Release`:
+## Licence
 
-- `xinput1_3.dll` — the loader
-- `KnightsDomain.dll` — the mod
-- `qdnet_tests.exe`, `qdmotion_tests.exe` — unit tests
+The code is Knights' Domain's, under its own licence in [LICENSE.txt](LICENSE.txt); this build is published with
+Mangolotis's permission. The libraries in `vendor` keep their own licences. Queen's Domain and its assets belong to
+their owners. This mod has no connection with the developer of Queen's Domain, so please report bugs here, not to them.
+
+Made by [Co-op Anything](https://github.com/cranebeaker).
