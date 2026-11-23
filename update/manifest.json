@@ -1,17 +1,17 @@
 {
-  "version": "1.5.2",
+  "version": "1.5.3",
   "files": [
     {
       "path": "KnightsDomain/KnightsDomain.dll",
-      "sha256": "fff248c37e40e81f60142a8c7ea9add71004c37daa5399e7daf8cedf7df1d860",
-      "size": 2195456,
-      "github": "https://github.com/cranebeaker/queens-domain-coop/releases/download/v1.5.2/KnightsDomain.dll"
+      "sha256": "4b04ca6f25fdfbd9291d0d5129eb41dbab9e523c585c3eebe99efc86e0080301",
+      "size": 2198016,
+      "github": "https://github.com/cranebeaker/queens-domain-coop/releases/download/v1.5.3/KnightsDomain.dll"
     },
     {
       "path": "xinput1_3.dll",
       "sha256": "08b08555c40e7b16667115bf8ffe2709ec27f611769b75330bcca48aff12b594",
       "size": 129536,
-      "github": "https://github.com/cranebeaker/queens-domain-coop/releases/download/v1.5.2/xinput1_3.dll"
+      "github": "https://github.com/cranebeaker/queens-domain-coop/releases/download/v1.5.3/xinput1_3.dll"
     }
   ]
 }

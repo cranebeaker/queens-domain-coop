@@ -62,6 +62,8 @@ struct Page {
     SDK::EVerticalAlignment v{};
     SDK::UCommonTextBlock* model = nullptr;   // Play Game's label: the text style of the page
     std::vector<SDK::UWidget*> hidden;        // the menu's own entries, collapsed while the page is open
+    SDK::UWidget* logo = nullptr;             // the Queen's Domain logo, hidden while the page is open
+    SDK::ESlateVisibility logoWas = SDK::ESlateVisibility::Visible;
     std::vector<SDK::UWidget*> added;         // the page's items in the column
     std::unordered_map<const SDK::UObject*, std::function<void()>> actions;
     SDK::UEditableTextBox* nameBox = nullptr;
@@ -125,7 +127,8 @@ void CopyFont(SDK::FSlateFontInfo& f, const SDK::FSlateFontInfo& m, float scale)
 }
 
 // A text block styled like Play Game's label. dim: greyed (information, not a button).
-SDK::UCommonTextBlock* NewText(SDK::UObject* outer, const std::string& text, float scale = 1.0f, bool dim = false) {
+SDK::UCommonTextBlock* NewText(SDK::UObject* outer, const std::string& text, float scale = 1.0f, bool dim = false,
+                               const SDK::FLinearColor* color = nullptr) {
     auto& p = P();
     SDK::UObject* o = SDK::UGameplayStatics::SpawnObject(SDK::UCommonTextBlock::StaticClass(), outer);
     if (!o) return nullptr;
@@ -145,6 +148,10 @@ SDK::UCommonTextBlock* NewText(SDK::UObject* outer, const std::string& text, flo
         label->ShadowColorAndOpacity = m->ShadowColorAndOpacity;
     }
     label->Justification = SDK::ETextJustify::Center;
+    if (color) {
+        label->ColorAndOpacity.SpecifiedColor = *color;
+        label->ColorAndOpacity.ColorUseRule = SDK::ESlateColorStylingMode::UseColor_Specified;
+    }
     if (dim) {
         SDK::FLinearColor& c = label->ColorAndOpacity.SpecifiedColor;
         c.R *= 0.7f;
@@ -241,6 +248,115 @@ void SetVisible(SDK::UWidget* w, bool visible) {
     Call(w, "SetVisibility", p);
 }
 
+SDK::UObject* TreeOf(SDK::UObject* w) {
+    auto* uw = static_cast<SDK::UUserWidget*>(w);
+    return uw && uw->WidgetTree ? static_cast<SDK::UObject*>(uw->WidgetTree) : w;
+}
+
+// The knight's face `head` (0..6) as a picture of size x size.
+SDK::UImage* NewFace(int head, float size) {
+    auto& p = P();
+    SDK::UObject* io = SDK::UGameplayStatics::SpawnObject(SDK::UImage::StaticClass(), TreeOf(p.title));
+    if (!io) return nullptr;
+    auto* img = static_cast<SDK::UImage*>(io);
+    char path[96];
+    std::snprintf(path, sizeof(path), "/Game/NPCs/Knight/Knight_Face_%02d_TX.Knight_Face_%02d_TX", head, head);
+    if (SDK::UObject* tex = ue::LoadObject(path); tex && tex->IsA(SDK::UTexture2D::StaticClass())) {
+        SDK::Params::Image_SetBrushFromTexture bt{};
+        bt.Texture = static_cast<SDK::UTexture2D*>(tex);
+        bt.bMatchSize = false;
+        Call(img, "SetBrushFromTexture", bt);
+    }
+    SDK::Params::Image_SetBrushSize bs{};
+    bs.DesiredSize = SDK::FVector2D{size, size};
+    Call(img, "SetBrushSize", bs);
+    return img;
+}
+
+SDK::UHorizontalBox* NewRow() {
+    SDK::UObject* o = SDK::UGameplayStatics::SpawnObject(SDK::UHorizontalBox::StaticClass(), TreeOf(P().title));
+    return o ? static_cast<SDK::UHorizontalBox*>(o) : nullptr;
+}
+
+// Adds `w` to a row; fill = takes the row's spare width.
+void RowAdd(SDK::UHorizontalBox* row, SDK::UWidget* w, float padRight, bool fill = false) {
+    if (!row || !w) return;
+    SDK::Params::HorizontalBox_AddChildToHorizontalBox hb{};
+    hb.Content = w;
+    if (!Call(row, "AddChildToHorizontalBox", hb) || !hb.ReturnValue) return;
+    SDK::Params::HorizontalBoxSlot_SetPadding hp{};
+    hp.InPadding = SDK::FMargin{0.0f, 0.0f, padRight, 0.0f};
+    Call(hb.ReturnValue, "SetPadding", hp);
+    struct { SDK::EVerticalAlignment a; } mid{SDK::EVerticalAlignment::VAlign_Center};
+    if (SDK::UFunction* f = ue::FindFunction(hb.ReturnValue, "SetVerticalAlignment")) ue::CallFunction(hb.ReturnValue, f, &mid);
+    if (fill) {
+        struct { SDK::FSlateChildSize s; } sz{};
+        sz.s.Value = 1.0f;
+        sz.s.SizeRule = SDK::ESlateSizeRule::Fill;
+        if (SDK::UFunction* f = ue::FindFunction(hb.ReturnValue, "SetSize")) ue::CallFunction(hb.ReturnValue, f, &sz);
+    }
+}
+
+const SDK::FLinearColor kReady{0.45f, 0.9f, 0.5f, 1.0f};
+const SDK::FLinearColor kWaiting{0.98f, 0.75f, 0.3f, 1.0f};
+const SDK::FLinearColor kHostCol{1.0f, 0.84f, 0.42f, 1.0f};
+const SDK::FLinearColor kPlaying{0.7f, 0.68f, 0.72f, 1.0f};
+
+// One player: face, name, a coloured badge.
+void AddPlayerRow(const sync::LobbyRow& r, const sync::LobbyView& v) {
+    SDK::UHorizontalBox* row = NewRow();
+    if (!row) return;
+    const int head = r.isLocal ? sync::LookLocalHead() : sync::LookHeadOf(r.slot);
+    RowAdd(row, NewFace(head < 0 ? 0 : head, 44.0f), 12.0f);
+    const std::string name = r.isLocal ? TrF("coop.you", r.name) : r.name;
+    RowAdd(row, NewText(TreeOf(P().title), name, 0.85f), 18.0f);
+    const char* key;
+    const SDK::FLinearColor* col;
+    if (r.isHost) { key = "page.badge_host"; col = &kHostCol; }
+    else if (!v.onTitle || v.started) { key = "page.badge_playing"; col = &kPlaying; }
+    else if (r.ready) { key = "page.badge_ready"; col = &kReady; }
+    else { key = "page.badge_waiting"; col = &kWaiting; }
+    RowAdd(row, NewText(TreeOf(P().title), Tr(key), 0.75f, false, col), 0.0f);
+    Add(row);
+}
+
+// The page is taller than the menu: the logo makes room while it is open, and the column moves up into that space.
+void MakeRoom(bool on) {
+    auto& p = P();
+    if (on) {
+        if (SDK::UWidget* logo = p.title->LogoScaleBox; logo && ue::IsValid(logo)) {
+            p.logo = logo;
+            p.logoWas = logo->Visibility;
+            SDK::Params::Widget_SetVisibility hv{};
+            hv.InVisibility = SDK::ESlateVisibility::Hidden;
+            Call(logo, "SetVisibility", hv);
+        }
+        float shift = 380.0f;   // slate units; worked out from the viewport below when it can be
+        SDK::UObject* lib = SDK::UWidgetLayoutLibrary::GetDefaultObj();
+        SDK::Params::WidgetLayoutLibrary_GetViewportSize vs{};
+        vs.WorldContextObject = p.title;
+        SDK::Params::WidgetLayoutLibrary_GetViewportScale sc{};
+        sc.WorldContextObject = p.title;
+        if (lib && Call(lib, "GetViewportSize", vs) && Call(lib, "GetViewportScale", sc) && sc.ReturnValue > 0.01f && vs.ReturnValue.Y > 0)
+            shift = vs.ReturnValue.Y / sc.ReturnValue * 0.45f;
+        SDK::Params::Widget_SetRenderTranslation tr{};
+        tr.Translation = SDK::FVector2D{0.0f, -shift};
+        Call(p.box, "SetRenderTranslation", tr);
+    } else {
+        if (p.logo && ue::IsValid(p.logo)) {
+            SDK::Params::Widget_SetVisibility hv{};
+            hv.InVisibility = p.logoWas;
+            Call(p.logo, "SetVisibility", hv);
+        }
+        p.logo = nullptr;
+        if (p.box && ue::IsValid(p.box)) {
+            SDK::Params::Widget_SetRenderTranslation tr{};
+            tr.Translation = SDK::FVector2D{0.0f, 0.0f};
+            Call(p.box, "SetRenderTranslation", tr);
+        }
+    }
+}
+
 // ---- what the page shows
 
 std::string DifficultyName(const sync::DifficultyInfo& d) {
@@ -265,7 +381,7 @@ std::string StateKey() {
     k += v.allReady ? "a" : "-";
     k += v.localReady ? "r" : "-";
     k += v.started ? "s" : "-";
-    for (const auto& r : v.rows) k += "|" + r.name + (r.ready ? "+" : "-");
+    for (const auto& r : v.rows) k += "|" + r.name + (r.ready ? "+" : "-") + std::to_string(sync::LookHeadOf(r.slot));
     if (ok && (st == net::SessionState::Idle || st == net::SessionState::Failed))
         for (const auto& l : coop::Session().FriendLobbies()) k += "|L" + std::to_string(l.lobbyId) + ":" + std::to_string(l.members);
     k += "|" + coop::LocalName();
@@ -327,11 +443,7 @@ void Build() {
         Add(TextButton(Tr("page.leave"), [] { coop::Session().Leave(); }));
     } else {
         // the players, each with where they are
-        for (const auto& r : v.rows) {
-            const char* state = r.isHost ? "lobby.state.host" : (!v.onTitle || v.started) ? "lobby.state.playing"
-                                : r.ready ? "lobby.state.ready" : "lobby.state.waiting";
-            AddText(r.name + "  -  " + Tr(state), 0.8f, !r.ready && !r.isHost);
-        }
+        for (const auto& r : v.rows) AddPlayerRow(r, v);
         if (v.rows.size() <= 1) AddText(Tr("page.invite_hint"), 0.65f, true);
         if (v.onTitle && !v.started) {
             if (v.isHost) {
@@ -375,9 +487,13 @@ void Build() {
             t.InText = ToText(coop::LocalName());
             Call(box, "SetText", t);
             p.nameBox = box;
-            AddText(Tr("page.your_name"), 0.7f, true);
-            Add(box);
-            Add(TextButton(Tr("page.save_name"), [] { SaveName(); }));
+            if (SDK::UHorizontalBox* row = NewRow()) {
+                RowAdd(row, NewText(TreeOf(p.title), Tr("page.your_name"), 0.75f, true), 10.0f);
+                RowAdd(row, box, 10.0f, true);
+                SDK::UFS_Button_C* save = TextButton(Tr("page.save"), [] { SaveName(); });
+                RowAdd(row, save, 0.0f);
+                Add(row);
+            }
         }
     }
 
@@ -387,7 +503,7 @@ void Build() {
         SDK::UObject* outer = p.title->WidgetTree ? static_cast<SDK::UObject*>(p.title->WidgetTree) : static_cast<SDK::UObject*>(p.title);
         if (SDK::UObject* o = SDK::UGameplayStatics::SpawnObject(SDK::UHorizontalBox::StaticClass(), outer)) {
             auto* row = static_cast<SDK::UHorizontalBox*>(o);
-            const int chosen = sync::LookLocalHead();
+            const int chosen = sync::LookLocalHead();   // smaller faces: the row must fit the column
             for (int i = 0; i < net::kLookHeads; ++i) {
                 char path[96];
                 std::snprintf(path, sizeof(path), "/Game/NPCs/Knight/Knight_Face_%02d_TX.Knight_Face_%02d_TX", i, i);
@@ -402,7 +518,7 @@ void Build() {
                     Call(img, "SetBrushFromTexture", bt);
                 }
                 SDK::Params::Image_SetBrushSize bs{};
-                bs.DesiredSize = SDK::FVector2D{kFaceSize, kFaceSize};
+                bs.DesiredSize = SDK::FVector2D{kFaceSize * 0.85f, kFaceSize * 0.85f};
                 Call(img, "SetBrushSize", bs);
                 SDK::UFS_Button_C* b = NewButton(img);
                 if (!b) continue;
@@ -432,6 +548,7 @@ void Close() {
     Clear();
     for (SDK::UWidget* w : p.hidden) SetVisible(w, true);
     p.hidden.clear();
+    MakeRoom(false);
     p.open = false;
     QD_INFO(kTag, "closed");
 }
@@ -486,6 +603,7 @@ void CoopPageOpen(SDK::UObject* titleObj) {
         SetVisible(sl->Content, false);
     }
     p.open = true;
+    MakeRoom(true);
     p.lobbiesIn = 0;
     if (coop::SessionReady() && coop::CoopAllowed()) coop::Session().RefreshFriendLobbies();
     Build();
