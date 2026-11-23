@@ -64,6 +64,8 @@ struct State {
 
     bool doingStart = false;     // our own calls into the menu: the hooks must not tell anyone
     int lastSelected = -1;       // the slot the host last selected on the menu
+    bool lastSelectedEmpty = false;   // it had no save when it was picked (a new game)
+    bool newGameRunning = false;      // inside NewGameOnNewSlotConfirmed on this machine
 
     std::mutex viewMx;
     LobbyView view;
@@ -345,17 +347,31 @@ void LobbyInit() {
     s.inited = true;
     coop::On(net::MsgType::Lobby, OnLobby);
     coop::AddMemberListener(OnMember);
-    hooks::AddPost(kFnSlotSelected, [](hooks::CallInfo& ci) {
+    // Before the game handles the pick: was the slot empty? (Picking an empty slot is a new game.)
+    hooks::AddPre(kFnSlotSelected, [](hooks::CallInfo& ci) {
         auto& st = S();
-        if (st.doingStart || !ci.params) return;
+        if (st.doingStart || !ci.params) return false;
         st.lastSelected = static_cast<SDK::Params::TitleScreenUI_C_SaveSlotSelected*>(ci.params)->Index_0;
+        st.lastSelectedEmpty = ci.object && !SlotHasSave(static_cast<SDK::UTitleScreenUI_C*>(ci.object), st.lastSelected);
+        return false;
+    });
+    // A new game loads its fresh slot through "Load Slot" from inside NewGameOnNewSlotConfirmed, so that load must be
+    // told to everyone as a new game, not as "load your save of this slot".
+    hooks::AddPre(kFnNewGame, [](hooks::CallInfo&) {
+        auto& st = S();
+        if (!st.doingStart) st.newGameRunning = true;
+        return false;
     });
     hooks::AddPost(kFnLoadSlot, [](hooks::CallInfo& ci) {
-        if (S().doingStart || !ci.params) return;
-        HostStarts(static_cast<SDK::Params::TitleScreenUI_C_Load_Slot*>(ci.params)->Slot_0, false);
+        auto& st = S();
+        if (st.doingStart || !ci.params) return;
+        const int slot = static_cast<SDK::Params::TitleScreenUI_C_Load_Slot*>(ci.params)->Slot_0;
+        const bool isNew = st.newGameRunning || (slot == st.lastSelected && st.lastSelectedEmpty);
+        HostStarts(slot, isNew);
     });
     hooks::AddPost(kFnNewGame, [](hooks::CallInfo&) {
         auto& st = S();
+        st.newGameRunning = false;
         if (st.doingStart) return;
         HostStarts(st.lastSelected, true);
     });
