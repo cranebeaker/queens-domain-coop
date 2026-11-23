@@ -416,6 +416,7 @@ void DieForReal(const char* why) {
     SetDowned(false);
     if (!p || p->IsDead) return;
     QD_INFO(kTag, "down -> dead ({})", why);
+    if (std::string_view(why) == "nobody left to revive") WorldSyncPartyWiped();
     SDK::Params::FS_PlayerChar_C_Kill k{};
     k.B33smentDeath = false;
     s.allowKill = true;

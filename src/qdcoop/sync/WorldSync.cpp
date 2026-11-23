@@ -85,6 +85,9 @@ struct State {
     std::vector<std::string> eventsOut;  // mirrored events that ran here, sent by the ticker
     double   quietUntil = 0;             // no mirrored events before this (a save or world is being restored)
     bool replaying = false;              // inside a mirrored event received from another machine
+    // game over: the whole party went down. The next reload is the host's save for everyone, not the shared world.
+    bool   wiped = false;
+    double wipedAt = 0;
     std::unordered_map<const void*, double> replayed;   // objects a received event ran on, and when
 };
 State& S() {
@@ -539,6 +542,9 @@ void Reassert(SDK::UFS_SaveSlot_C* save, const Snapshot& cur, bool onlyMissing) 
 
 bool SyncSessionFlag();
 
+constexpr const char* kResetMarker = "r!";   // first entry of a full state: replace, do not merge
+constexpr double kWipeWaitSec = 40.0;          // a client waits this long for the host's save after a game over
+
 void OnWorldFlags(uint8_t fromSlot, const uint8_t* data, size_t size) {
     auto& s = S();
     net::MsgWorldFlags m;
@@ -550,7 +556,14 @@ void OnWorldFlags(uint8_t fromSlot, const uint8_t* data, size_t size) {
     SDK::UFS_SaveSlot_C* save = ActiveSave();
     if (save) RebuildIndex();
     int applied = 0;
+    if (!host && !m.flags.empty() && m.flags.front().name == kResetMarker) {
+        s.known = Snapshot{};
+        s.taken.clear();
+        s.wiped = false;
+        QD_INFO(kTag, "game over: the world is the host's save again");
+    }
     for (auto& f : m.flags) {
+        if (f.name == kResetMarker) continue;
         if (!f.name.empty() && f.name[0] == 'e') {   // an event: run it once, never remembered
             RunEvent(f.name);
             continue;
@@ -614,6 +627,29 @@ void Tick(float dt) {
     }
     Snapshot cur = Read(save);
 
+    if (s.wiped && NowSec() - s.wipedAt > kWipeWaitSec) s.wiped = false;
+    if (host && reloaded && s.wiped && s.lastSave != nullptr) {
+        // game over: the reloaded save is the world again (a chest looted since the save is closed again)
+        s.wiped = false;
+        s.known = cur;
+        s.taken.clear();
+        s.dropsSeen = cur.drops;
+        std::vector<net::FlagValue> all{{kResetMarker, 0}};
+        Flags(s.known, nullptr, all);
+        SendChunks(all, true, [](const std::vector<uint8_t>& b) { coop::Broadcast(net::Channel::Reliable, b); });
+        QD_INFO(kTag, "game over: the reloaded save is the world for everyone ({} entries)", all.size());
+        s.lastSave = save;
+        s.lastWorld = world;
+        return;
+    }
+    if (!host && s.wiped) {
+        // game over on a client: its own reload must not bring back the old shared world, and it says nothing
+        // until the host's save arrives
+        s.lastSave = save;
+        s.lastWorld = world;
+        s.dropsSeen = cur.drops;
+        return;
+    }
     if (host && s.lastSave == nullptr) {
         s.known = cur;   // the host's world is the session's starting point
         // a new round (or the session's first look): everyone gets this world in full
@@ -672,6 +708,14 @@ void OnMember(const coop::Member& m, bool joined) {
 }  // namespace
 
 bool WorldSyncReplaying() { return S().replaying; }
+
+void WorldSyncPartyWiped() {
+    auto& s = S();
+    if (!coop::InSession()) return;
+    s.wiped = true;
+    s.wipedAt = NowSec();
+    QD_INFO(kTag, "game over for the party: the next reload is the host's save");
+}
 
 void WorldSyncNewRound() {
     auto& s = S();

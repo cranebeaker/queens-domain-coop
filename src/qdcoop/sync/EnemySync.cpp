@@ -314,6 +314,9 @@ struct Entry {
     bool   controlled = false;
     SDK::AEnemyBase_C* controlledEnemy = nullptr;
     SDK::EMovementMode savedMoveMode = SDK::EMovementMode::MOVE_Walking;
+    // this enemy instance was seen with a movement mode of its own (walking, falling, flying...) while we did not hold
+    // it. An enemy never seen so is one that does not move: the laser flower (Looker) hangs with MOVE_None.
+    const SDK::AEnemyBase_C* mobileFor = nullptr;
     double nextReconcileAt = 0;
     double clientMaxAt = -100;
     // ---- trap mode / custom attacks (every machine)
@@ -1016,7 +1019,10 @@ void ReleaseControl(Entry& e) {
         }
         if (SDK::UCharacterMovementComponent* cm = en->CharacterMovement; Valid(cm)) {
             SDK::EMovementMode m = e.savedMoveMode;
-            if (!dormant && m == SDK::EMovementMode::MOVE_None) m = SDK::EMovementMode::MOVE_Walking;
+            // MOVE_None when we took it: a dormant enemy that rose since needs to walk, and so does one we have seen
+            // moving. One that has never moved by itself stays as it was (Walking made the laser flower fall).
+            if (!dormant && m == SDK::EMovementMode::MOVE_None && (e.savedAiDisabled || e.mobileFor == en))
+                m = SDK::EMovementMode::MOVE_Walking;
             cm->SetMovementMode(m, 0);
         }
     }
@@ -1269,6 +1275,10 @@ void Rebuild(double now) {
             if (e.controlled) ReleaseControl(e);
             e.enemy = nullptr;
         }
+        if (Valid(e.enemy) && !e.controlled && e.mobileFor != e.enemy)
+            if (SDK::UCharacterMovementComponent* cm = e.enemy->CharacterMovement;
+                Valid(cm) && cm->MovementMode != SDK::EMovementMode::MOVE_None)
+                e.mobileFor = e.enemy;
         if (!e.spawner && !e.enemy && now - e.seenAt > kEntryStaleSec) {
             it = s.entries.erase(it);
             continue;
