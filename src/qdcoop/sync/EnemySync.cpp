@@ -1514,6 +1514,10 @@ void HostEvaluateOwners(double now) {
             if (want != OwnerOf(id).slot && MemberPresent(want)) changes.push_back({id, want, "成对", true});
             continue;
         }
+        // A downed owner keeps its enemies: its game still runs them (they only stop targeting that player). Handing
+        // them over the moment a player went down swapped every enemy near them at once, and an enemy the new owner's
+        // game had in another state showed that state (a disguised Looker, awake here, sank into the ground).
+        if (cur < net::kMaxPlayers && cur != 0xFF && MemberPresent(cur) && PartySlotDowned(cur)) continue;
         // 1.0.6: bosses and every enemy that starts dormant (its spawner's behaviour mode is not the plain one) are
         // run by the host. A dormant enemy is woken, kept awake, made damageable and reset by game logic that only
         // looks at the machine it runs on - arena triggers, "damage off until triggered", "player left the arena" -
