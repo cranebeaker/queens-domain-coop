@@ -22,6 +22,7 @@
 #include "qdcoop/core/Log.h"
 #include "qdcoop/core/Unreal.h"
 #include "qdcoop/ui/CoopMenu.h"
+#include "qdcoop/ui/CoopPage.h"
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
 
@@ -244,11 +245,12 @@ void TitleButtonInit() {
     hooks::AddPost(kButtonClicked, [](hooks::CallInfo& ci) {
         auto& st = S();
         if (st.button && ci.object == st.button) {
-            ShowLobby(true);
-            QD_INFO(kTag, "co-op lobby opened from the title menu");
+            CoopPageOpen(st.title);
+            QD_INFO(kTag, "co-op page opened from the title menu");
         }
     });
     s.ticker = gamethread::AddTicker("titlebutton", [](float dt) { Tick(dt); });
+    CoopPageInit();
     QD_INFO(kTag, "initialized");
 }
 
