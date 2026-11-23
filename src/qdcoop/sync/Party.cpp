@@ -33,6 +33,10 @@
 
 #include "qdcoop/sync/Party.h"
 
+#include <filesystem>
+#include <fstream>
+#include <set>
+
 #include "qdcoop/core/Core.h"
 #include "qdcoop/core/Hooks.h"
 #include "qdcoop/core/Log.h"
@@ -40,7 +44,10 @@
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
 #include "qdcoop/sync/PlayerSync.h"
+#include "qdcoop/core/Config.h"
 #include "qdcoop/core/Util.h"
+#include "qdcoop/sync/CoopInternal.h"
+#include "qdcoop/sync/GameQueries.h"
 #include "qdcoop/sync/BossSync.h"
 #include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/ui/I18n.h"
@@ -280,6 +287,7 @@ SDK::UFS_SaveSlot_C* ActiveSave() {
 
 // Tradeable: consumables (herbs, potions, throwables...), not weapons, equipment, keys or quest items.
 bool Tradeable(const SDK::UFS_ItemData_C* it) {
+    if (it && ue::PathName(it) == "/Game/Items/Treasure/Coins/Coin.Coin") return true;   // coins can be traded too
     return it && it->Consumable && !it->Weapon && !it->Equippable && !it->ShowInKeyMenu && !it->Unstackable;
 }
 
@@ -1134,10 +1142,19 @@ void OnTradeMsg(const net::MsgParty& m) {
 
 // ------------------------------------------------------------------ shared items
 //
-// Every weapon a player gets is given to every other player too: picked up, from an NPC, a chest, an altar, a boss.
-// Weapons bought in a shop stay with the buyer, and everything else (consumables, coins, gear, keys) is traded by
-// hand in the Party tab. Items pass through the game's SaveFunctions.AddItemToInventory, hooked here; a player who
-// already has the weapon does not get a second one.
+// Every item a player gets that is not a consumable is given to every other player too: weapons, gear, necklaces,
+// belts, upgrades, keys, treasures; picked up, from an NPC, a chest, an altar, a boss. Shop purchases stay with the
+// buyer, and consumables and coins are traded by hand. Items pass through the game's SaveFunctions.AddItemToInventory,
+// hooked here. A one-of-a-kind item (weapon, equippable, unstackable) is given only to a player who does not have it
+// yet; anything else in the same amount.
+constexpr const char* kCoinItem = "/Game/Items/Treasure/Coins/Coin.Coin";
+
+bool Shared(const SDK::UFS_ItemData_C* item, const std::string& path) {
+    return item && !item->Consumable && path != kCoinItem;
+}
+bool OneOfAKind(const SDK::UFS_ItemData_C* item) {
+    return item->Unstackable || item->Weapon || item->Equippable;
+}
 
 constexpr uint64_t kSettleMs = 0;   // a weapon is never given twice, so the starting inventory needs no wait
 SDK::UObject* g_lastChar = nullptr;
@@ -1160,6 +1177,108 @@ std::string ShortItemName(const std::string& path) {
     return dot == std::string::npos ? path : path.substr(dot + 1);
 }
 
+// ---- catch-up: the host keeps, per save slot, the list of one-of-a-kind items shared in that world. A friend who
+// joins later (or missed one) is given every listed item they do not have. A save from before this list existed starts
+// it from the host's own one-of-a-kind, non-consumable items.
+
+std::set<std::string> g_ledger;
+int g_ledgerSlot = -1000;
+
+int HostSaveSlot() {
+    const int s = QueryActiveSaveSlot();
+    return s >= 0 ? s : coop::ActiveSaveSlotCached();
+}
+
+std::filesystem::path LedgerPath(int slot) {
+    return std::filesystem::path(paths::ModSaved()) / L"shared" / (L"slot" + std::to_wstring(slot) + L".txt");
+}
+
+void LedgerSave() {
+    std::error_code ec;
+    const auto p = LedgerPath(g_ledgerSlot);
+    std::filesystem::create_directories(p.parent_path(), ec);
+    std::ofstream f(p, std::ios::trunc);
+    for (const auto& s : g_ledger) f << s << "\n";
+}
+
+// The list of the host's current save, loaded (or started) when the save changes. False when not in a game.
+bool LedgerReady() {
+    if (!coop::IsHost() || !LocalPlayer()) return false;
+    const int slot = HostSaveSlot();
+    if (slot == g_ledgerSlot) return true;
+    g_ledgerSlot = slot;
+    g_ledger.clear();
+    std::error_code ec;
+    const auto p = LedgerPath(slot);
+    if (std::filesystem::is_regular_file(p, ec)) {
+        std::ifstream f(p);
+        for (std::string line; std::getline(f, line);)
+            if (!line.empty()) g_ledger.insert(line);
+        QD_INFO(kTag, "shared-items list of slot {}: {} items", slot, g_ledger.size());
+        return true;
+    }
+    if (SDK::UFS_SaveSlot_C* save = ActiveSave()) {
+        for (auto& kv : save->InventoryContents) {
+            SDK::UFS_Item* raw = kv.Key();
+            if (!raw || kv.Value() <= 0 || !ue::IsValid(raw) || !raw->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
+            auto* it = static_cast<SDK::UFS_ItemData_C*>(raw);
+            const std::string path = ue::PathName(it);
+            if (Shared(it, path) && OneOfAKind(it) && ue::Name(it) != "NullWeapon") g_ledger.insert(path);
+        }
+    }
+    LedgerSave();
+    QD_INFO(kTag, "shared-items list of slot {} started from the host's items: {}", slot, g_ledger.size());
+    return true;
+}
+
+void LedgerAdd(const std::string& path) {
+    if (!LedgerReady() || !g_ledger.insert(path).second) return;
+    LedgerSave();
+}
+
+// Host: send every listed item to one player (they keep only what they lack).
+void SendCatchUp(uint8_t toSlot) {
+    if (!LedgerReady() || g_ledger.empty()) return;
+    net::MsgParty m;
+    m.kind = net::PartyKind::Gift;
+    m.toSlot = toSlot;
+    for (const auto& path : g_ledger) {
+        m.items.push_back({path, 1});
+        if (m.items.size() == net::kMaxPartyItems) {
+            Send(m);
+            m.items.clear();
+        }
+    }
+    if (!m.items.empty()) Send(m);
+    QD_INFO(kTag, "catch-up: sent the {} shared items to slot {}", g_ledger.size(), toSlot);
+}
+
+bool g_catchUpAsked = false;
+SDK::UObject* g_catchUpChar = nullptr;
+double g_catchUpCharSince = 0;
+
+// Client: a few seconds into a world, ask the host for the shared items this player may have missed.
+void TickCatchUp(double now) {
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    if (!coop::InSession() || coop::IsHost() || !p) {
+        g_catchUpChar = nullptr;
+        g_catchUpAsked = false;
+        return;
+    }
+    if (p != g_catchUpChar) {
+        g_catchUpChar = p;
+        g_catchUpCharSince = now;
+        g_catchUpAsked = false;
+    }
+    if (g_catchUpAsked || now - g_catchUpCharSince < 6.0 || GameBusy(p)) return;
+    g_catchUpAsked = true;
+    net::MsgParty m;
+    m.kind = net::PartyKind::Gift;
+    m.toSlot = 0;
+    m.arg = 1;   // "send me the list"
+    Send(m);
+}
+
 void OnItemAdded(hooks::CallInfo& ci) {
     if (g_giving || !ci.params || !coop::InSession() || WorldSyncReplaying() || BossSyncReplaying()) return;
     SDK::ACharacter* ch = ue::LocalCharacter();
@@ -1174,39 +1293,52 @@ void OnItemAdded(hooks::CallInfo& ci) {
     const std::string path = ue::ToString(p->Item.ObjectID.AssetPathName);
     if (path.empty() || p->Count <= 0 || path.size() > net::kMaxItemPathBytes) return;
     SDK::UObject* obj = ue::LoadObject(path);
-    if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass()) || !static_cast<SDK::UFS_ItemData_C*>(obj)->Weapon) return;
+    if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass()) || !Shared(static_cast<SDK::UFS_ItemData_C*>(obj), path)) return;
+    const int count = OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj)) ? 1 : p->Count;
     if (ShopOpen()) {
         QD_INFO(kTag, "item {} x{} bought (shop open): not shared", path, p->Count);
         return;
     }
+    if (OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj))) LedgerAdd(path);
     net::MsgParty m;
     m.kind = net::PartyKind::Gift;
     m.toSlot = net::kPartyAll;
-    m.items.push_back({path, 1});
+    m.items.push_back({path, count});
     Send(m);
     QD_INFO(kTag, "shared {} x{} with the party", path, p->Count);
 }
 
 void ReceiveGift(const net::MsgParty& m) {
+    if (m.arg == 1) {   // a friend asks for the shared items they may have missed
+        if (coop::IsHost()) SendCatchUp(m.fromSlot);
+        return;
+    }
+    int got = 0;
+    const bool many = m.items.size() > 3;
     for (const auto& it : m.items) {
         SDK::UObject* obj = ue::LoadObject(it.path);
         if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) {
             QD_WARN(kTag, "shared item {} not found", it.path);
             continue;
         }
-        if (!static_cast<SDK::UFS_ItemData_C*>(obj)->Weapon) continue;   // only weapons are shared
-        if (CountOf(it.path) > 0) {
+        auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
+        if (!Shared(item, it.path)) continue;   // consumables and coins are traded, never shared
+        const bool unique = OneOfAKind(item);
+        if (unique) LedgerAdd(it.path);   // host: a friend's find belongs to this world too
+        if (unique && CountOf(it.path) > 0) {
             QD_INFO(kTag, "shared item {} from {}: already have it", it.path, NameOf(m.fromSlot));
             continue;
         }
-        const int count = 1;
+        const int count = unique ? 1 : std::clamp(it.count, 1, 99);
         if (GiveItem(it.path, count)) {
             QD_INFO(kTag, "got shared item {} x{} from {}", it.path, count, NameOf(m.fromSlot));
-            ui::Toast(ui::TrF("party.gift", ShortItemName(it.path), NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
+            ++got;
+            if (!many) ui::Toast(ui::TrF("party.gift", ShortItemName(it.path), NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
         } else {
             QD_WARN(kTag, "shared item {} x{} could not be added", it.path, count);
         }
     }
+    if (many && got > 0) ui::Toast(ui::TrF("party.gift_many", got), ui::ToastKind::Info, 4.0f);
 }
 
 void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
@@ -1281,6 +1413,7 @@ void Tick(float) {
     TickRest(now);
     TickTrade(now);
     TickTradePrompt(now);
+    TickCatchUp(now);
     ui::SetInputCapture(s.trade.stage == TradeStage::Open);
 
     if (now - s.invAt > 0.5) {
@@ -1390,6 +1523,18 @@ void DrawTradeBody(const UiSnap& s) {
                 const std::string path = l.path;
                 gamethread::Post([path, cur] { TradeSetCount(path, cur + 1); });
             }
+            if (l.have > 10) {   // coins and big stacks: ten at a time too
+                ImGui::SameLine();
+                if (ImGui::SmallButton("-10")) {
+                    const std::string path = l.path;
+                    gamethread::Post([path, cur] { TradeSetCount(path, cur - 10); });
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+10")) {
+                    const std::string path = l.path;
+                    gamethread::Post([path, cur] { TradeSetCount(path, cur + 10); });
+                }
+            }
             ImGui::EndDisabled();
             ImGui::SameLine();
             if (cur > 0) ImGui::TextColored(kColOk, "%d / %d  %s", cur, l.have, l.name.c_str());
@@ -1481,6 +1626,12 @@ void DrawTradeHud() {
 }
 
 }  // namespace
+
+void PartyHostNewGame(int slot) {
+    std::error_code ec;
+    std::filesystem::remove(LedgerPath(slot), ec);
+    if (g_ledgerSlot == slot) g_ledgerSlot = -1000;
+}
 
 bool PartyLocalDowned() { return S().localDowned; }
 bool PartySlotDowned(uint8_t slot) { return slot < net::kMaxPlayers && S().downed[slot]; }

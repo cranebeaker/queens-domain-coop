@@ -8,6 +8,8 @@ namespace qd::sync {
 
 void PartyInit();       // after coop::Init + ui::Init: message handler, hooks, ticker, the F5 "Party" tab
 void PartyShutdown();
+// Host: a new game in `slot` starts a new list of shared items for it.
+void PartyHostNewGame(int slot);
 
 // Game thread. The local player is down (ran out of health with a teammate who can revive them). PlayerSync shows a
 // downed player as lying (the dead pose) and EnemySync stops picking them as a target.

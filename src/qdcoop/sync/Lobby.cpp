@@ -27,6 +27,7 @@
 #include "qdcoop/net/Protocol.h"
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/CoopCharacter.h"
+#include "qdcoop/sync/Party.h"
 #include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
@@ -230,7 +231,10 @@ void HostStarts(int slot, bool isNew) {
     m.readyMask = s.readyMask;
     m.saveSlot = static_cast<uint8_t>(slot < 0 || slot >= 16 ? 0 : slot);
     m.isNew = isNew ? 1 : 0;
-    if (isNew) CharacterHostNewGame(slot);
+    if (isNew) {
+        CharacterHostNewGame(slot);
+        PartyHostNewGame(slot);
+    }
     coop::Broadcast(net::Channel::Reliable, net::Encode(m));
     QD_INFO(kTag, "host starts: slot {} ({})", slot, isNew ? "new game" : "save");
 }
