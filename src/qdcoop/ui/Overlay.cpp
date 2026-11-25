@@ -576,8 +576,16 @@ void DrawMenu() {
                 const std::string label = std::string(Tr(t.title.c_str())) + "###" + t.id;
                 const ImGuiTabItemFlags tf = !shotTab.empty() && t.id == shotTab ? ImGuiTabItemFlags_SetSelected : 0;
                 if (ImGui::BeginTabItem(label.c_str(), nullptr, tf)) {
-                    if (t.draw) t.draw();
-                    if (!shotTab.empty() && shotScroll >= 0.999f) ImGui::SetScrollHereY(1.0f);
+                    // the tab's contents scroll on their own, so the tab row and the footer always stay in view
+                    const float footer = ImGui::GetStyle().ItemSpacing.y * 2.0f + ImGui::GetTextLineHeightWithSpacing();
+                    if (ImGui::BeginChild("##qdcoop_tab_body", ImVec2(0, -footer))) {
+                        if (t.draw) t.draw();
+                        if (!shotTab.empty()) {
+                            if (shotScroll >= 0.999f) ImGui::SetScrollHereY(1.0f);
+                            else ImGui::SetScrollY(shotScroll * ImGui::GetScrollMaxY());
+                        }
+                    }
+                    ImGui::EndChild();
                     ImGui::EndTabItem();
                 }
             }
@@ -585,7 +593,6 @@ void DrawMenu() {
         }
         ImGui::Separator();
         ImGui::TextDisabled("%s", TrF("menu.footer", config::Get().menuKey).c_str());
-        if (!shotTab.empty() && shotScroll < 0.999f) ImGui::SetScrollY(shotScroll * ImGui::GetScrollMaxY());
     }
     ImGui::End();
     if (!open) SetMenuOpen(false);
