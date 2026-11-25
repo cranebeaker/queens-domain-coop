@@ -30,6 +30,7 @@
 #include "SDK/ItemPickup_Base_classes.hpp"
 #include "SDK/SaveFunctions_classes.hpp"
 #include "SDK/SaveFunctions_parameters.hpp"
+#include "SDK/Elevator_Base_classes.hpp"
 
 #include "qdcoop/sync/WorldSync.h"
 #include "qdcoop/sync/Party.h"
@@ -40,6 +41,7 @@
 #include "qdcoop/core/Unreal.h"
 #include "qdcoop/sync/Coop.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -86,6 +88,7 @@ struct State {
     std::vector<std::string> eventsOut;  // mirrored events that ran here, sent by the ticker
     double   quietUntil = 0;             // no mirrored events before this (a save or world is being restored)
     bool replaying = false;              // inside a mirrored event received from another machine
+    std::vector<SDK::ASavableActor_C*> heldRestores;   // lifts mid-ride: their restore waits until they stop
     // game over: the whole party went down. The next reload is the host's save for everyone, not the shared world.
     bool   wiped = false;
     double wipedAt = 0;
@@ -255,7 +258,18 @@ bool ApplyState(const Guid& g, int32_t value) {
             }
             const bool same = had && before.IsSet_1_52B3D8FF4C3CC8B0DAAD90BE9BA2A2B7 &&
                               before.Value_4_81204DA949BB8DCF4D35D4B4419EC024 == value;
-            if (!same) CallRestore(r.actor);
+            if (!same) {
+                // 1.6.5: a lift a teammate's lever started is riding here too (the pull is mirrored); restoring it
+                // now would snap the platform to the end, so that waits until the ride is over
+                auto* el = r.actor->IsA(SDK::AElevator_Base_C::StaticClass()) ? static_cast<SDK::AElevator_Base_C*>(r.actor) : nullptr;
+                if (el && (el->Running || el->ActivelyMoving)) {
+                    if (std::find(s.heldRestores.begin(), s.heldRestores.end(), r.actor) == s.heldRestores.end())
+                        s.heldRestores.push_back(r.actor);
+                    QD_INFO(kTag, "lift {} is riding: its saved state waits for the ride to end", ue::Name(r.actor));
+                } else {
+                    CallRestore(r.actor);
+                }
+            }
         }
         if (ok) return true;
     }
@@ -410,6 +424,9 @@ constexpr const char* kMirrored[] = {
     "/Game/Blueprints/ActivationTrigger.ActivationTrigger_C:DoTrigger",
     // a cutscene starts (ritual, Sipeha transition, the four endings): it plays for everyone
     "/Game/Cutscenes/CutsceneManagerBase.CutsceneManagerBase_C:BeginCutscene",
+    // 1.6.5: a lift lever is pulled: the lift rides on every machine (only its saved end state was shared before, and
+    // restoring that put the platform straight at the end for everyone but the player who pulled it)
+    "/Game/Blueprints/Elevator/ElevatorLever.ElevatorLever_C:TryPullLever",
     // a pot breaks: pots are not saved (they come back after a rest), so the break itself is shared; its loot is
     // rolled where it was broken and arrives as a drop (HazardSync skips the roll during a replay)
     "/Game/Props/Pots/Pot_Base.Pot_Base_C:Break",
@@ -620,6 +637,16 @@ void Tick(float dt) {
         s.eventsOut.clear();
         SendChunks(ev, false, [](const std::vector<uint8_t>& b) { coop::Broadcast(net::Channel::Reliable, b); });
         QD_INFO(kTag, "sent {} event(s), first {}", ev.size(), ev.front().name);
+    }
+    if (!s.heldRestores.empty()) {
+        std::erase_if(s.heldRestores, [](SDK::ASavableActor_C* a) {
+            if (!ue::IsValid(a)) return true;
+            auto* el = static_cast<SDK::AElevator_Base_C*>(a);
+            if (el->Running || el->ActivelyMoving) return false;
+            CallRestore(a);
+            QD_INFO(kTag, "lift {} stopped: saved state restored", ue::Name(a));
+            return true;
+        });
     }
     s.pollIn -= dt;
     s.indexIn -= dt;

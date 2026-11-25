@@ -25,6 +25,7 @@
 #include "SDK/EnemySpawner_parameters.hpp"
 #include "SDK/FS_PlayerChar_classes.hpp"
 #include "SDK/FS_PlayerChar_parameters.hpp"
+#include "SDK/EnemyHealthBar_base_classes.hpp"
 
 #include "qdcoop/sync/EnemySync.h"
 #include "qdcoop/sync/BossSync.h"
@@ -162,6 +163,9 @@ constexpr float  kNearAssignRange  = 3000.0f;   // cm: "nearest" only hands an e
 constexpr float  kNearMarginCm     = 800.0f;    // ... who is at least 8 m closer than the current owner
 constexpr float  kNearMarginRatio  = 0.7f;      // ... and at most 70 % of the current owner's distance
 constexpr double kHitSwitchMinSec  = 3.0;       // hits: floor between two changes
+// 1.6.5: a player who has not hit their enemy for this long no longer keeps it from a teammate who is hitting it
+// (was kHitAggroSec, 6 s: the enemy kept chasing the first player while the second one hit it)
+constexpr double kOwnerFightHitSec = 3.0;
 // Balance: an enemy only fights the machine that runs it, and every enemy starts on the host, so with two players side
 // by side the "clearly closer" rule above never fired and the host took every enemy of a group while the client was
 // left alone. An ordinary enemy that is not fighting yet (or only just started) now goes to the player with the fewest
@@ -199,7 +203,7 @@ constexpr double kRiseWatchSec     = 5.0;       // a dormant enemy is watched th
 // machine's player, so bosses only ever fought their owner. The owner now picks the target among all players near
 // the boss by threat (damage dealt, fading with a 12 s half-life) and hands the game that player's avatar.
 constexpr double kThreatHalfLife   = 12.0;
-constexpr double kTargetMinSec     = 8.0;       // a target is kept at least this long
+constexpr double kTargetMinSec     = 3.0;       // a target is kept at least this long (1.6.5: was 8 s)
 constexpr float  kTargetSwitchRatio = 1.35f;    // ... and only lost to someone with 35 % more threat
 constexpr double kTargetIdleSec    = 14.0;      // nobody dealt damage this long -> the nearest player
 constexpr const char* kFnGetTargetPlayer = "/Script/QueensDomain.FS_EnemyCharacterBase:GetTargetPlayer";   // cm: the owner keeps a fighting boss while within 45 m of it
@@ -1339,7 +1343,9 @@ void BuildCandidates(double now) {
         net::Vec3f feet{};
         float yaw = 0;
         if (!playersync::RemotePose(slot, feet, yaw)) continue;
-        s.cands.push_back({slot, SDK::FVector(feet.x, feet.y, feet.z + kFeetToCenter), !rt.dead});
+        // 1.6.5: a downed teammate is not a target either (before, only the downed player's own machine knew it, so the
+        // host left their enemies with them and those stood still until the revive)
+        s.cands.push_back({slot, SDK::FVector(feet.x, feet.y, feet.z + kFeetToCenter), !rt.dead && !PartySlotDowned(slot)});
     }
     for (const Cand& c : s.cands) NoteSettled(c, now);
 }
@@ -1547,7 +1553,7 @@ void HostEvaluateOwners(double now) {
             // teleport, `kd egoto`). Without a grace period a client's hit took the boss in that gap and the host took
             // it back a moment later, eight times in one fight (Cocker), until the host's copy stood frozen.
             if (hostThere) e.hostThereAt = now;
-            else if (special && now - e.hostThereAt < kHostThereGraceSec) hostThere = true;
+            else if (special && now - e.hostThereAt < kHostThereGraceSec && CandAlive(0)) hostThere = true;   // not while the host is down
             e.hostRun = special && hostThere;
             if (e.hostRun) {
                 e.bossLockSlot = 0xFF;
@@ -1600,7 +1606,7 @@ void HostEvaluateOwners(double now) {
             //    with a hit of their own in the last 6 s). Repeat hits by the current owner change nothing.
             if (e.lastHitSlot != cur && now - rec.changedAt >= kHitSwitchMinSec) {
                 bool ownerFights = false;
-                if (CandAlive(cur) && cur < net::kMaxPlayers && now - e.hitAt[cur] < kHitAggroSec && Engaged(e, en, cur, now))
+                if (CandAlive(cur) && cur < net::kMaxPlayers && now - e.hitAt[cur] < kOwnerFightHitSec && Engaged(e, en, cur, now))
                     for (const Cand& k : s.cands)
                         if (k.slot == cur && k.alive && Dist(pos, k.pos) <= kOwnerFightRange) ownerFights = true;
                 if (!ownerFights) changes.push_back({id, e.lastHitSlot, "命中", true});
@@ -1613,8 +1619,8 @@ void HostEvaluateOwners(double now) {
             changes.push_back({id, to, "分担", true});
         } else if (CandAlive(cur) && Engaged(e, en, cur, now)) {
             // 2. chasing / attacking its owner: keep
-        } else if (now - rec.changedAt >= kOwnerSwitchSec) {
-            // 3. nearest living player in the host's area (4. at most one change per 3 s)
+        } else if (now - rec.changedAt >= kOwnerSwitchSec || !CandAlive(cur)) {
+            // 3. nearest living player (at once when its player is down or dead: it must not stand by them) in the host's area (4. at most one change per 3 s)
             const Cand* c = NearestCand(pos, e, now);
             if (c && c->slot != cur) {
                 const float dNew = Dist(pos, c->pos);
@@ -3379,6 +3385,9 @@ void ApplyEvent(const net::MsgEnemyEvent& ev) {
                 KillEnemy(en, ev.arg != 0, false);
                 e.nextReconcileAt = now + kKillRetrySec + 1.0;
             }
+            // 1.6.5: the copy's HP stays where the last snapshot left it (a teammate's killing blow lands on the
+            // owner's copy only), and the game's health bars read HP: it showed health left on a dead enemy.
+            if (en && en->HP > 0) en->HP = 0;
             // the boss died on another machine: its health bar goes now, not when this copy's death sequence ends
             if (en && e.bossBar) {
                 CallBossBar(en, false);
@@ -3832,6 +3841,53 @@ void TickBars(double now) {
     }
 }
 
+// 1.6.5: the small health bar the game shows over the enemy a player last hit (EnemyHealthBar_base). It goes away when
+// the game's own death of that enemy reaches it; an enemy killed by a teammate dies here by a remote Died, and its bar
+// stayed up showing the health it had (play test: "health persists when my friend gets the killing blow"). A bar whose
+// enemy has been dead for 1.5 s is told its target died.
+std::vector<SDK::UEnemyHealthBar_base_C*> EnemyBarWidgets() {
+    std::vector<SDK::UEnemyHealthBar_base_C*> out;
+    SDK::UClass* cls = SDK::UEnemyHealthBar_base_C::StaticClass();
+    auto* arr = SDK::UObject::GObjects.GetTypedPtr();
+    if (!Valid(cls) || !arr) return out;
+    for (int32_t i = 0, n = arr->Num(); i < n; ++i) {
+        SDK::UObject* o = arr->GetByIndex(i);
+        if (!o || !o->IsA(cls) || ue::Name(o).starts_with("Default__")) continue;
+        out.push_back(static_cast<SDK::UEnemyHealthBar_base_C*>(o));
+    }
+    return out;
+}
+
+void TickEnemyBars(double now) {
+    static double next = 0;
+    static std::map<const void*, double> deadSince;   // bar -> when its enemy was first seen dead
+    if (now < next) return;
+    next = now + 0.5;
+    std::map<const void*, double> keep;
+    for (SDK::UEnemyHealthBar_base_C* w : EnemyBarWidgets()) {
+        if (w->FadedOut) continue;
+        // the game reuses one bar: after a teammate's kill the enemy is removed while its bar still shows (test:
+        // 38/39 left on a bar whose enemy no longer existed). A bar that never had a target has MaxHP 0.
+        const bool gone = !Valid(w->Enemy);
+        if (gone && w->MaxHP <= 0) continue;
+        if (!gone && !w->Enemy->IsA(SDK::AEnemyBase_C::StaticClass())) continue;
+        auto* en = gone ? nullptr : static_cast<SDK::AEnemyBase_C*>(w->Enemy);
+        if (en && !en->bDead) continue;
+        auto it = deadSince.find(w);
+        const double since = it != deadSince.end() ? it->second : now;
+        if (now - since < 1.5) {
+            keep[w] = since;
+            continue;
+        }
+        if (en && en->HP > 0) en->HP = 0;
+        alignas(16) uint8_t none[16] = {};
+        Call(w, "TargetRemovedViaDeath", none);
+        QD_INFO(kTag, "{}: {} for 1.5 s with its health bar still showing {:.0f}, bar told it died",
+                en ? ue::Name(en) : std::string("an enemy"), en ? "dead" : "gone", w->CurrentHP);
+    }
+    deadSince.swap(keep);
+}
+
 void Tick(float dt) {
     auto& s = S();
     if (s.hookDepth > 0) return;   // re-entered from inside one of our hook callbacks: skip this frame
@@ -3858,6 +3914,7 @@ void Tick(float dt) {
     }
 
     TickBars(now);
+    if (s.active) TickEnemyBars(now);
     DrainInbox();
     HookScope tickScope;   // a nested Pump during our ProcessEvent calls must not run handlers into our iterations
     RefreshSession();
@@ -4366,6 +4423,18 @@ void DebugActorCount(const std::string& filter) {
         if (line.size() > 700) break;
     }
     QD_INFO("edbg", "actors '{}': {} class(es) of {} actors: {}", filter, counts.size(), all.size(), line);
+}
+
+void DebugEnemyBars() {
+    int n = 0;
+    for (SDK::UEnemyHealthBar_base_C* w : EnemyBarWidgets()) {
+        const bool en = Valid(w->Enemy) && w->Enemy->IsA(SDK::AEnemyBase_C::StaticClass());
+        auto* e = en ? static_cast<SDK::AEnemyBase_C*>(w->Enemy) : nullptr;
+        QD_INFO("edbg", "bar {} class={} enemy={} dead={} enemyHp={:.0f} barHp={:.0f}/{:.0f} fadedOut={} opacity={:.2f} vis={}",
+                n++, ue::ClassName(w), e ? ue::Name(e) : std::string("-"), e && e->bDead ? 1 : 0, e ? e->HP : 0.0f,
+                w->CurrentHP, w->MaxHP, w->FadedOut ? 1 : 0, w->RenderOpacity, static_cast<int>(w->Visibility));
+    }
+    QD_INFO("edbg", "bars: {}", n);
 }
 
 void DebugEnemyInteract(const std::string& filter) {

@@ -245,6 +245,7 @@ void Run(const std::string& line) {
                     static_cast<SDK::AFS_PlayerChar_C*>(ch)->Health);
         } else QD_INFO(kTag, "where: no local character (world {})", qd::ue::World() ? qd::ue::Name(qd::ue::World()) : std::string("-"));
     }
+    else if (cmd == "bars") { qd::sync::DebugEnemyBars(); }
     else if (cmd == "elist") { std::string f; in >> f; qd::sync::DebugEnemyList(f); }
     else if (cmd == "egoto") { std::string f; float d = 900, ang = 0; in >> f >> d >> ang; qd::sync::DebugEnemyGoto(f, d, ang); }
     else if (cmd == "ehp") { std::string f; float fr = 0.5f; in >> f >> fr; qd::sync::DebugEnemyHp(f, fr); }
