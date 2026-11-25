@@ -32,6 +32,7 @@
 #include "SDK/SaveFunctions_parameters.hpp"
 
 #include "qdcoop/sync/WorldSync.h"
+#include "qdcoop/sync/Party.h"
 
 #include "qdcoop/core/Core.h"
 #include "qdcoop/core/Hooks.h"
@@ -349,7 +350,9 @@ bool ApplyTaken(SDK::UFS_SaveSlot_C* save, const Guid& g) {
         for (const LiveRef& r : it->second) {
             if (r.index != 0 || !ue::IsValid(r.actor) || !pick || !r.actor->IsA(pick)) continue;
             CallNoParams(r.actor, "DeleteDropData");
-            r.actor->K2_DestroyActor();
+            // the local player is picking this one up right now: it goes away by itself when its animation ends
+            // (destroying it first leaves the player with no controls)
+            if (!PartyPickingUp(r.actor)) r.actor->K2_DestroyActor();
             removed = true;
         }
         if (removed) s.live.erase(it);

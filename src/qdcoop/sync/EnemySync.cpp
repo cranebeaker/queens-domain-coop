@@ -2321,9 +2321,19 @@ void OnManagedDiedPost(hooks::CallInfo& ci) {
     SendEvent(id, net::EnemyEventType::Died, p->NoReward ? 1 : 0);   // arg 1 = no rewards (despawn-style death)
 }
 
+// Every enemy whose health bar is on the screen, whoever turned it on (the game or a remote event), with when it was
+// first seen dead. The game takes a bar down at the end of the death it plays itself; an enemy killed another way (by
+// a teammate's hit landing at the same moment, a remote Died) could keep its bar forever. TickBars takes it down.
+std::map<SDK::AEnemyBase_C*, double> g_barsOn;
+
 void OnBossBarPost(hooks::CallInfo& ci, bool on) {
     auto& s = S();
-    if (!s.active || !ci.params) return;
+    if (!ci.params) return;
+    if (SDK::AEnemyBase_C* b = static_cast<SDK::Params::FS_PlayerChar_C_ActivateBossHPBar*>(ci.params)->Enemy) {
+        if (on) g_barsOn.emplace(b, -1.0);
+        else g_barsOn.erase(b);
+    }
+    if (!s.active) return;
     // ActivateBossHPBar / DeactivateBossHPBar share the layout {AEnemyBase_C* Enemy; UEnemyData_C* Group;}
     SDK::AEnemyBase_C* en = static_cast<SDK::Params::FS_PlayerChar_C_ActivateBossHPBar*>(ci.params)->Enemy;
     if (!Valid(en)) return;
@@ -3792,6 +3802,36 @@ void PublishStats() {
     }
 }
 
+// A health bar whose enemy has been dead for 1.5 s comes down (the game's own death sequence is done by then or
+// is not coming); a bar whose enemy is gone is forgotten.
+void TickBars(double now) {
+    static double next = 0;
+    if (now < next || g_barsOn.empty()) return;
+    next = now + 0.5;
+    for (auto it = g_barsOn.begin(); it != g_barsOn.end();) {
+        SDK::AEnemyBase_C* en = it->first;
+        if (!Valid(en) || !en->IsA(SDK::AEnemyBase_C::StaticClass())) {
+            it = g_barsOn.erase(it);
+            continue;
+        }
+        if (!en->bDead) {
+            it->second = -1.0;
+            ++it;
+            continue;
+        }
+        if (it->second < 0) it->second = now;
+        if (now - it->second < 1.5) {
+            ++it;
+            continue;
+        }
+        QD_INFO(kTag, "{}: dead for 1.5 s with its health bar still up, taking it down", ue::Name(en));
+        it = g_barsOn.erase(it);
+        CallBossBar(en, false);   // its post hook finds nothing left to erase
+        if (auto bi = S().byEnemy.find(en); bi != S().byEnemy.end())
+            if (auto ei = S().entries.find(bi->second); ei != S().entries.end()) ei->second.bossBar = false;
+    }
+}
+
 void Tick(float dt) {
     auto& s = S();
     if (s.hookDepth > 0) return;   // re-entered from inside one of our hook callbacks: skip this frame
@@ -3803,6 +3843,7 @@ void Tick(float dt) {
         // Ownership (s.owners) is kept: it is session state, not world state.
         s.entries.clear();
         s.byEnemy.clear();
+        g_barsOn.clear();
         s.spawnerIds.clear();
         s.idOwner.clear();
         s.spawnerAllowUntil.clear();
@@ -3816,6 +3857,7 @@ void Tick(float dt) {
         QD_INFO(kTag, "world changed -> {}; enemy map rebuilt from scratch", world ? ue::Name(world) : std::string("<none>"));
     }
 
+    TickBars(now);
     DrainInbox();
     HookScope tickScope;   // a nested Pump during our ProcessEvent calls must not run handlers into our iterations
     RefreshSession();

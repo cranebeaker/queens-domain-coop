@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string>
 
+namespace SDK { class UObject; }
+
 namespace qd::sync {
 
 void PartyInit();       // after coop::Init + ui::Init: message handler, hooks, ticker, the F5 "Party" tab
@@ -14,6 +16,9 @@ void PartyHostNewGame(int slot);
 void PartyForceStandUp();
 // The player cannot move or look (a teleport or a cutscene that never ended): end it the game's own way. Thread-safe.
 void PartyUnstuck();
+// True while the local player is in the game's pick-up animation of `pickup` (an ItemPickup actor): it must not be
+// destroyed then, or the game never gives the controls back.
+bool PartyPickingUp(const SDK::UObject* pickup);
 
 // Game thread. The local player is down (ran out of health with a teammate who can revive them). PlayerSync shows a
 // downed player as lying (the dead pose) and EnemySync stops picking them as a target.

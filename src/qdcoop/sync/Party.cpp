@@ -30,6 +30,7 @@
 #include "SDK/SaveFunctions_parameters.hpp"
 #include "SDK/FS_SaveSlot_classes.hpp"
 #include "SDK/FS_ItemData_classes.hpp"
+#include "SDK/TimeDilationManagement_parameters.hpp"
 
 #include "qdcoop/sync/Party.h"
 
@@ -996,7 +997,11 @@ void BuildPrompt(UiSnap& snap, double now) {
         const bool accept = s.trade.stage == TradeStage::Incoming && s.trade.peer == g_tp.cand;
         snap.prompt = ui::TrF(accept ? "party.hud_hold_accept" : "party.hud_hold_trade", UiNameOf(static_cast<uint8_t>(g_tp.cand)));
         if (g_tp.progress > 0) snap.progress = g_tp.progress;
+        return;
     }
+    // a trade request waiting for an answer stays on the screen until it is answered (or runs out)
+    if (s.trade.stage == TradeStage::Incoming)
+        snap.prompt = ui::TrF("party.hud_trade_waiting", UiNameOf(s.trade.peer));
 }
 
 void TickTradePrompt(double now) {
@@ -1057,9 +1062,67 @@ std::string UiNameOf(uint8_t slot) { return NameOf(slot); }
 std::atomic<double> g_tradeDrawnAt{0};   // the trade window was last drawn (render thread writes)
 double g_stuckSince = -1, g_lockedSince = -1, g_tradeOpenSince = -1;
 
+// The game's pick-up pause (ItemPickupAnimationComp.StartPickupPause): it turns the player's input off and pauses
+// time, and EndPickupPause, run by the pickup itself at the end of its animation, turns them back on. A pickup that
+// is gone before that (removed by the world sync, unloaded) leaves the player unable to walk, pause or open the menu.
+SDK::UObject* g_pickupComp = nullptr;   // the animation component of the pickup being picked up
+SDK::UObject* g_pickupOwner = nullptr;
+double g_pickupSince = -1, g_pickupGoneSince = -1;
+
+SDK::UObject* TimeDilationCdo() {
+    SDK::UClass* c = ue::FindClass("/Game/LD45/Blueprints/TimeDilationManagement.TimeDilationManagement_C");
+    return c ? c->ClassDefaultObject : nullptr;
+}
+
+// Everything StartPickupPause turned off, back on (what EndPickupPause does).
+void EndStuckPickup(SDK::AFS_PlayerChar_C* p) {
+    g_pickupComp = g_pickupOwner = nullptr;
+    g_pickupSince = g_pickupGoneSince = -1;
+    if (!p || !ue::IsValid(p)) return;
+    if (SDK::APlayerController* pc = ue::LocalController(); pc && ue::IsValid(pc)) {
+        p->EnableInput(pc);
+        pc->ResetIgnoreInputFlags();
+    }
+    if (SDK::UObject* cdo = TimeDilationCdo()) {
+        SDK::Params::TimeDilationManagement_C_Set_Pause_Time_Dilation tp{};
+        tp.Pause = false;
+        tp.__WorldContext = p;
+        Call(cdo, "Set Pause Time Dilation", tp);
+    }
+    p->CustomTimeDilation = 1.0f;
+    SDK::Params::FS_PlayerChar_C_SetPlayerDoingQuickInteraction qi{};
+    qi.DoingIt = false;
+    Call(p, "SetPlayerDoingQuickInteraction", qi);
+}
+
+void OnPickupPauseStart(hooks::CallInfo& ci) {
+    g_pickupComp = ci.object;
+    auto* comp = static_cast<SDK::UActorComponent*>(ci.object);
+    g_pickupOwner = comp ? comp->GetOwner() : nullptr;
+    g_pickupSince = Now();
+    g_pickupGoneSince = -1;
+}
+void OnPickupPauseEnd(hooks::CallInfo& ci) {
+    if (ci.object == g_pickupComp) {
+        g_pickupComp = g_pickupOwner = nullptr;
+        g_pickupSince = g_pickupGoneSince = -1;
+    }
+}
+
 void TickWatchdogs(double now) {
     auto& s = S();
     SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    // a pick-up pause whose pickup went away (1 s), or one that never ended (20 s, outside dialogue and menus)
+    if (g_pickupSince > 0) {
+        const bool gone = !g_pickupComp || !ue::IsValid(g_pickupComp) || !g_pickupOwner || !ue::IsValid(g_pickupOwner);
+        if (gone && g_pickupGoneSince < 0) g_pickupGoneSince = now;
+        const bool lost = gone && now - g_pickupGoneSince > 1.0;
+        const bool tooLong = now - g_pickupSince > 20.0 && !g_dialogue && !g_uiMode && !ui::IsMenuOpen();
+        if (lost || tooLong) {
+            QD_WARN(kTag, "watchdog: a pick-up pause did not end ({}), giving the controls back", lost ? "the pickup is gone" : "20 s");
+            EndStuckPickup(p);
+        }
+    }
     // a teleport of the game that never ends (it blocks all input)
     if (p && (p->Teleporting || p->QuickTeleporting)) {
         if (g_stuckSince < 0) g_stuckSince = now;
@@ -1149,7 +1212,7 @@ void OnTradeMsg(const net::MsgParty& m) {
         t.id = m.id;
         t.peer = m.fromSlot;
         t.openedAt = Now();
-        ui::Toast(ui::TrF("trade.incoming", NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
+        ui::Toast(ui::TrF("trade.incoming", NameOf(m.fromSlot)), ui::ToastKind::Info, 6.0f);
         return;
     }
     if (t.stage == TradeStage::None || m.id != t.id || m.fromSlot != t.peer) return;
@@ -1791,10 +1854,18 @@ void PartyUnstuck() {
     gamethread::Post([] {
         SDK::AFS_PlayerChar_C* p = LocalPlayer();
         if (!p) return;
-        QD_INFO(kTag, "unstuck (Fix tab): teleporting {} quick {}", p->Teleporting, p->QuickTeleporting);
+        QD_INFO(kTag, "unstuck (Fix tab): teleporting {} quick {}, pick-up pause {}, input lock {}", p->Teleporting, p->QuickTeleporting,
+                g_pickupSince > 0, g_inputLocked);
         S().rest = RestJob{};
         S().driving = false;
+        // every way the game takes the controls away, given back: a teleport, loading or a cutscene, a pick-up
+        // pause, ignored move or look input, paused time
         EndStuckTeleport(p);
+        EndStuckPickup(p);
+        g_inputLocked = false;
+        g_lockedSince = g_stuckSince = -1;
+        p->DisableJump = false;
+        p->KnockedDown = false;
         if (p->CharacterMovement && ue::IsValid(p->CharacterMovement))
             p->CharacterMovement->SetMovementMode(SDK::EMovementMode::MOVE_Falling, 0);
         ui::SetInputCapture("trade", false);
@@ -1818,6 +1889,8 @@ void PartyHostNewGame(int slot) {
 }
 
 bool PartyLocalDowned() { return S().localDowned; }
+
+bool PartyPickingUp(const SDK::UObject* pickup) { return pickup && g_pickupSince > 0 && pickup == g_pickupOwner; }
 bool PartySlotDowned(uint8_t slot) { return slot < net::kMaxPlayers && S().downed[slot]; }
 
 std::string PartyLabelSuffix(uint8_t slot) {
@@ -1877,6 +1950,8 @@ void PartyInit() {
     s.hooks.push_back(hooks::AddPost(kFnRestButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, false); }));
     s.hooks.push_back(hooks::AddPost(kFnSaveButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, true); }));
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:AddItemToInventory", OnItemAdded));
+    s.hooks.push_back(hooks::AddPost("/Game/Blueprints/ItemPickupAnimationComp.ItemPickupAnimationComp_C:StartPickupPause", OnPickupPauseStart));
+    s.hooks.push_back(hooks::AddPost("/Game/Blueprints/ItemPickupAnimationComp.ItemPickupAnimationComp_C:EndPickupPause", OnPickupPauseEnd));
     const std::string pc = kPlayerClass;
     s.hooks.push_back(hooks::AddPost((pc + ":EnterUIMode").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_uiMode, true); }));
     s.hooks.push_back(hooks::AddPost((pc + ":ExitUIMode").c_str(), [](hooks::CallInfo& ci) { OnPlayerFlag(ci, &g_uiMode, false); }));
