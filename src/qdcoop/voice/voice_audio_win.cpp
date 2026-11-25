@@ -309,6 +309,26 @@ bool RunPlayback(Stream& s, const AudioPlayback::RenderFn& render, const std::fu
 
 }  // namespace
 
+std::vector<std::string> ListDevices(bool capture) {
+    std::vector<std::string> out;
+    const HRESULT init = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    {
+        Com<IMMDeviceEnumerator> en;
+        Com<IMMDeviceCollection> list;
+        UINT n = 0;
+        if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator),
+                                       reinterpret_cast<void**>(en.put()))) &&
+            SUCCEEDED(en->EnumAudioEndpoints(capture ? eCapture : eRender, DEVICE_STATE_ACTIVE, list.put())) && SUCCEEDED(list->GetCount(&n))) {
+            for (UINT i = 0; i < n; ++i) {
+                Com<IMMDevice> d;
+                out.push_back(SUCCEEDED(list->Item(i, d.put())) ? NameOf(d.get()) : std::string("?"));
+            }
+        }
+    }
+    if (SUCCEEDED(init)) CoUninitialize();
+    return out;
+}
+
 void AudioCapture::start(int device, PcmQueue* sink) {
     stop();
     failed_ = false;

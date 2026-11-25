@@ -37,6 +37,7 @@
 #include <atomic>
 #include <cmath>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -62,10 +63,6 @@ PcmQueue g_queue;
 AudioCapture g_capture;
 AudioPlayback g_playback;
 
-// the F5 tab's "Test microphone": the microphone runs outside a session so the meter moves
-std::atomic<bool> g_micTest{false};
-bool g_testRunning = false;
-
 // dev / test controls
 bool g_forceKey = false, g_tone = false;
 uint64_t g_toneSamples = 0, g_toneLastMs = 0;
@@ -80,6 +77,23 @@ struct View {
 };
 std::mutex g_viewMx;
 View g_view;
+
+std::mutex g_devMx;
+std::vector<std::string> g_mics, g_speakers;
+double g_devNext = 0;
+void RefreshDevices() {
+    const double now = static_cast<double>(GetTickCount64()) / 1000.0;
+    if (now < g_devNext) return;
+    g_devNext = now + 5.0;
+    auto mics = ListDevices(true), spk = ListDevices(false);
+    std::lock_guard lk(g_devMx);
+    g_mics = std::move(mics);
+    g_speakers = std::move(spk);
+}
+
+// the F5 tab's "Test microphone": the microphone runs outside a session so the meter moves
+std::atomic<bool> g_micTest{false};
+bool g_testRunning = false;
 
 uint64_t NowMs() { return static_cast<uint64_t>(GetTickCount64()); }
 
@@ -105,6 +119,10 @@ void SetSetting(const char* key, const std::string& value) {
     WritePrivateProfileStringW(L"voice", k.c_str(), v.c_str(), IniPath().wstring().c_str());
     g_set = readSettings(Getter());
     g_rebuild = true;
+    if (g_testRunning) {   // the test microphone follows the new device
+        g_capture.stop();
+        g_testRunning = false;
+    }
 }
 
 // ---- where everyone is: Unreal (cm, yaw in degrees, X forward / Y right) to the placement's convention (yaw in radians,
@@ -221,6 +239,7 @@ void ToneFrame(int16_t* out) {
 }
 
 void Tick(float) {
+    if (ui::IsMenuOpen()) RefreshDevices();   // only while F5 is open: the lists are for the Voice tab
     const bool in = g_set.enabled && coop::InSession();
     const auto local = coop::LocalSlot();
     if (!in || !local || *local >= kMaxSlots) {
@@ -360,6 +379,24 @@ void DrawIndicator() {
 
 // ---- F5 > Voice
 
+// A slider showing `saved * scale`; while it is being dragged it keeps its own value (re-reading the setting every frame
+// snapped it back), and when it is let go the new value goes to voice.ini.
+void SettingSlider(const char* label, const char* key, float saved, float scale, float lo, float hi, const char* fmt, float width,
+                   ImGuiSliderFlags flags = 0) {
+    static std::map<std::string, float> held;   // render thread only
+    const std::string k = key;
+    auto it = held.find(k);
+    float v = it != held.end() ? it->second : saved * scale;
+    ImGui::SetNextItemWidth(width);
+    ImGui::SliderFloat(label, &v, lo, hi, fmt, flags);
+    if (ImGui::IsItemActive()) held[k] = v;
+    if (ImGui::IsItemDeactivated()) {
+        held.erase(k);
+        const std::string val = std::to_string(v / scale);
+        gamethread::Post([k, val] { SetSetting(k.c_str(), val); });
+    }
+}
+
 const int kKeys[] = {0xA4 /*LAlt*/, 'V', 'B', 'T', 'X', 0x14 /*Caps*/, 0x05 /*Mouse4*/, 0x06 /*Mouse5*/};
 
 void DrawTab() {
@@ -377,10 +414,42 @@ void DrawTab() {
     ImGui::SeparatorText(ui::Tr("voice.mic_section"));
     ImGui::TextUnformatted(ui::Tr("voice.mode"));
     ImGui::SameLine();
-    if (ImGui::RadioButton(ui::Tr("voice.ptt"), mode == 0) && mode != 0) gamethread::Post([] { SetSetting("mode", "push_to_talk"); });
+    if (ImGui::RadioButton(ui::Tr("voice.ptt"), mode == 0) && mode != 0) gamethread::Post([] { SetSetting("mode", "ptt"); });
     ImGui::SameLine();
-    if (ImGui::RadioButton(ui::Tr("voice.open"), mode == 1) && mode != 1) gamethread::Post([] { SetSetting("mode", "open_mic"); });
+    if (ImGui::RadioButton(ui::Tr("voice.open"), mode == 1) && mode != 1) gamethread::Post([] { SetSetting("mode", "open"); });
 
+    // which microphone and which speakers (Windows default unless one is picked)
+    {
+        std::vector<std::string> mics, spk;
+        {
+            std::lock_guard lk(g_devMx);
+            mics = g_mics;
+            spk = g_speakers;
+        }
+        auto picker = [](const char* label, const char* id, const char* key, int cur, const std::vector<std::string>& list) {
+            ImGui::TextUnformatted(label);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(340.0f);
+            const std::string shown = cur >= 0 && cur < static_cast<int>(list.size()) ? list[cur] : std::string(ui::Tr("voice.default_device"));
+            if (ImGui::BeginCombo(id, shown.c_str())) {
+                if (ImGui::Selectable(ui::Tr("voice.default_device"), cur < 0)) {
+                    const std::string k = key;
+                    gamethread::Post([k] { SetSetting(k.c_str(), "-1"); });
+                }
+                for (int i = 0; i < static_cast<int>(list.size()); ++i) {
+                    ImGui::PushID(i);
+                    if (ImGui::Selectable(list[i].c_str(), i == cur)) {
+                        const std::string k = key, v = std::to_string(i);
+                        gamethread::Post([k, v] { SetSetting(k.c_str(), v); });
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndCombo();
+            }
+        };
+        picker(ui::Tr("voice.mic_device"), "##micdev", "mic_device", s.micDevice, mics);
+        picker(ui::Tr("voice.speaker_device"), "##spkdev", "speaker_device", s.speakerDevice, spk);
+    }
     // the meter: how loud the microphone is now; in voice activation, the mark where it starts sending
     {
         constexpr float kMax = 4000.0f;   // loudness at the right end (a shout is about 3000)
@@ -412,13 +481,8 @@ void DrawTab() {
         }
     }
     if (mode == 1) {
-        float th = s.openThreshold;
-        ImGui::SetNextItemWidth(340.0f);
-        ImGui::SliderFloat(ui::Tr("voice.threshold"), &th, 50.0f, 4000.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-        if (ImGui::IsItemDeactivatedAfterEdit()) {
-            const std::string val = std::to_string(th);
-            gamethread::Post([val] { SetSetting("open_threshold", val); });
-        }
+        SettingSlider(ui::Tr("voice.threshold"), "open_threshold", s.openThreshold, 1.0f, 50.0f, 4000.0f, "%.0f", 340.0f,
+                      ImGuiSliderFlags_Logarithmic);
         ImGui::TextDisabled("%s", ui::Tr("voice.threshold_help"));
     }
 
@@ -434,27 +498,9 @@ void DrawTab() {
         ImGui::EndCombo();
     }
 
-    float vol = s.volume * 100.0f;
-    ImGui::SetNextItemWidth(260.0f);
-    ImGui::SliderFloat(ui::Tr("voice.volume"), &vol, 0.0f, 200.0f, "%.0f %%");
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        const std::string val = std::to_string(vol / 100.0f);
-        gamethread::Post([val] { SetSetting("volume", val); });
-    }
-    float mic = s.micVolume * 100.0f;
-    ImGui::SetNextItemWidth(260.0f);
-    ImGui::SliderFloat(ui::Tr("voice.mic_volume"), &mic, 0.0f, 400.0f, "%.0f %%");
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        const std::string val = std::to_string(mic / 100.0f);
-        gamethread::Post([val] { SetSetting("mic_volume", val); });
-    }
-    float range = s.range / 100.0f;
-    ImGui::SetNextItemWidth(260.0f);
-    ImGui::SliderFloat(ui::Tr("voice.range"), &range, 5.0f, 100.0f, "%.0f m");
-    if (ImGui::IsItemDeactivatedAfterEdit()) {
-        const std::string val = std::to_string(range * 100.0f);
-        gamethread::Post([val] { SetSetting("range", val); });
-    }
+    SettingSlider(ui::Tr("voice.volume"), "volume", s.volume, 100.0f, 0.0f, 200.0f, "%.0f %%", 260.0f);
+    SettingSlider(ui::Tr("voice.mic_volume"), "mic_volume", s.micVolume, 100.0f, 0.0f, 400.0f, "%.0f %%", 260.0f);
+    SettingSlider(ui::Tr("voice.range"), "range", s.range, 0.01f, 5.0f, 100.0f, "%.0f m", 260.0f);
 
     if (!v.inSession) {
         ImGui::Spacing();

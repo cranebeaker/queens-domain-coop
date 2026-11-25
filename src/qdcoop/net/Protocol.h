@@ -8,7 +8,7 @@
 
 namespace qd::net {
 
-constexpr uint16_t kProtocolVersion = 14;   // v14: Voice (proximity chat); v13: Look (avatar head); v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
+constexpr uint16_t kProtocolVersion = 15;   // v15: Character versions, Where/Here; v14: Voice (proximity chat); v13: Look (avatar head); v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
 constexpr int      kMaxPlayers = 4;
 constexpr size_t   kMaxNameBytes = 72;    // UTF-8, 24 CJK chars
 constexpr size_t   kMaxItemPathBytes = 256;   // MsgEquip::itemPath
@@ -198,7 +198,10 @@ struct MsgLobby { LobbyKind kind = LobbyKind::State; uint8_t fromSlot = 0, ready
 // None     host -> client: none kept yet (the client starts a fresh one).
 // Begin / Chunk / End   a save file in pieces: purpose 0 = host -> client (load it), 1 = client -> host (keep it).
 //          Begin: total = size in bytes; Chunk: offset + data (<= 1024 bytes); End closes the file `id`.
-enum class CharacterKind : uint8_t { Request = 1, None, Begin, Chunk, End };
+// Request: total = the version of the client's own copy (its play time in seconds, 0 = none). None: use your own copy
+// (the host has no newer one). Begin: offset = the version of the file that follows. Where: the client asks where the
+// host is; Here: data = the path of the host's last checkpoint (FS_LocationData), empty when unknown.
+enum class CharacterKind : uint8_t { Request = 1, None, Begin, Chunk, End, Where, Here };
 constexpr size_t kMaxCharacterBytes = 8u * 1024u * 1024u;
 struct MsgCharacter {
     CharacterKind kind = CharacterKind::Request; uint8_t purpose = 0; uint32_t id = 0, total = 0, offset = 0;

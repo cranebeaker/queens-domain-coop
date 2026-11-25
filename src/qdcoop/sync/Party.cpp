@@ -33,6 +33,7 @@
 
 #include "qdcoop/sync/Party.h"
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -1052,6 +1053,54 @@ void TickTradePrompt(double now) {
 
 std::string UiNameOf(uint8_t slot) { return NameOf(slot); }
 
+// ---- watchdogs: nothing may leave the player without controls
+std::atomic<double> g_tradeDrawnAt{0};   // the trade window was last drawn (render thread writes)
+double g_stuckSince = -1, g_lockedSince = -1, g_tradeOpenSince = -1;
+
+void TickWatchdogs(double now) {
+    auto& s = S();
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    // a teleport of the game that never ends (it blocks all input)
+    if (p && (p->Teleporting || p->QuickTeleporting)) {
+        if (g_stuckSince < 0) g_stuckSince = now;
+        if (now - g_stuckSince > 25.0) {
+            QD_WARN(kTag, "watchdog: a teleport did not end in 25 s, ending it the game's own way");
+            EndStuckTeleport(p);
+            ui::Toast(ui::Tr("fix.auto_unstuck"), ui::ToastKind::Warning, 5.0f);
+            g_stuckSince = -1;
+        }
+    } else {
+        g_stuckSince = -1;
+    }
+    // input locked for loading or a cutscene, with neither going on
+    const bool cutscene = p && (p->InIntroCutscene || p->CurrentCutsceneManager);
+    if (p && g_inputLocked && !cutscene && !(p->Teleporting || p->QuickTeleporting)) {
+        if (g_lockedSince < 0) g_lockedSince = now;
+        if (now - g_lockedSince > 30.0) {
+            QD_WARN(kTag, "watchdog: input locked for 30 s with no loading or cutscene, unlocking it");
+            char none = 0;
+            Call(p, "UnlockInputForLoadingOrCutscene", none);
+            Call(p, "SlightDelayEnableInput", none);
+            g_inputLocked = false;
+            g_lockedSince = -1;
+        }
+    } else {
+        g_lockedSince = -1;
+    }
+    // an open trade holds the input only while its window is on the screen
+    if (s.trade.stage == TradeStage::Open) {
+        if (g_tradeOpenSince < 0) g_tradeOpenSince = now;
+        if (now - g_tradeOpenSince > 1.5 && now - g_tradeDrawnAt.load() > 1.5) {
+            QD_WARN(kTag, "watchdog: the trade window is not showing, giving the controls back");
+            SendTo(s.trade.peer, net::PartyKind::TradeCancel, s.trade.id);
+            TradeReset("trade.cancelled_by_you");
+            ui::SetInputCapture("trade", false);
+        }
+    } else {
+        g_tradeOpenSince = -1;
+    }
+}
+
 void TickTrade(double) {
     auto& s = S();
     Trade& t = s.trade;
@@ -1196,7 +1245,9 @@ std::string ShortItemName(const std::string& path) {
 // joins later (or missed one) is given every listed item they do not have. A save from before this list existed starts
 // it from the host's own one-of-a-kind, non-consumable items.
 
-std::set<std::string> g_ledger;
+// path -> the party's agreed amount of that shared item in this world. It only ever grows (a player who lost items, a
+// fresh character, never drags everyone down); a catch-up brings each player up to it.
+std::map<std::string, int> g_ledger;
 int g_ledgerSlot = -1000;
 
 int HostSaveSlot() {
@@ -1213,7 +1264,32 @@ void LedgerSave() {
     const auto p = LedgerPath(g_ledgerSlot);
     std::filesystem::create_directories(p.parent_path(), ec);
     std::ofstream f(p, std::ios::trunc);
-    for (const auto& s : g_ledger) f << s << "\n";
+    for (const auto& [path, n] : g_ledger) f << path << "\t" << n << "\n";
+}
+
+// A correction file next to the list (slot<n>.add.txt, "path<TAB>amount" lines) raises agreed amounts once and is then
+// removed: how a lost amount is put right without touching the running game.
+void MergeCorrections(int slot) {
+    std::error_code ec;
+    const auto add = LedgerPath(slot).replace_extension(L".add.txt");
+    if (!std::filesystem::is_regular_file(add, ec)) return;
+    int n = 0;
+    {
+        std::ifstream f(add);
+        for (std::string line; std::getline(f, line);) {
+            const size_t tab = line.find('	');
+            if (line.empty() || tab == std::string::npos) continue;
+            const std::string path = line.substr(0, tab);
+            const int amount = std::atoi(line.c_str() + tab + 1);
+            if (amount > 0 && amount > g_ledger[path]) {
+                g_ledger[path] = amount;
+                ++n;
+            }
+        }
+    }
+    std::filesystem::remove(add, ec);
+    LedgerSave();
+    QD_INFO(kTag, "shared-items list of slot {}: {} amount(s) corrected", slot, n);
 }
 
 // The list of the host's current save, loaded (or started) when the save changes. False when not in a game.
@@ -1227,9 +1303,16 @@ bool LedgerReady() {
     const auto p = LedgerPath(slot);
     if (std::filesystem::is_regular_file(p, ec)) {
         std::ifstream f(p);
-        for (std::string line; std::getline(f, line);)
-            if (!line.empty()) g_ledger.insert(line);
+        for (std::string line; std::getline(f, line);) {
+            if (line.empty()) continue;
+            const size_t tab = line.find('\t');
+            const std::string path = line.substr(0, tab);
+            int n = tab == std::string::npos ? 0 : std::atoi(line.c_str() + tab + 1);
+            if (n <= 0) n = std::max(1, CountOf(path));   // a list from before amounts: what the host has
+            g_ledger[path] = std::max(g_ledger[path], n);
+        }
         QD_INFO(kTag, "shared-items list of slot {}: {} items", slot, g_ledger.size());
+        MergeCorrections(slot);
         return true;
     }
     if (SDK::UFS_SaveSlot_C* save = ActiveSave()) {
@@ -1238,7 +1321,7 @@ bool LedgerReady() {
             if (!raw || kv.Value() <= 0 || !ue::IsValid(raw) || !raw->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
             auto* it = static_cast<SDK::UFS_ItemData_C*>(raw);
             const std::string path = ue::PathName(it);
-            if (Shared(it, path) && ue::Name(it) != "NullWeapon") g_ledger.insert(path);
+            if (Shared(it, path) && ue::Name(it) != "NullWeapon") g_ledger[path] = std::max(g_ledger[path], kv.Value());
         }
     }
     LedgerSave();
@@ -1246,9 +1329,30 @@ bool LedgerReady() {
     return true;
 }
 
-void LedgerAdd(const std::string& path) {
-    if (!LedgerReady() || !g_ledger.insert(path).second) return;
+// The agreed amount of `path` is at least `n` (default: what the host has now).
+void LedgerAdd(const std::string& path, int n = -1) {
+    if (!LedgerReady()) return;
+    if (n < 0) n = CountOf(path);
+    int& cur = g_ledger[path];
+    if (n <= cur && cur > 0) return;
+    cur = std::max({cur, n, 1});
     LedgerSave();
+}
+
+// A stack shown in the key menu (door keys and the like) is used up in the world: it is never topped up.
+bool TopUpAllowed(const SDK::UFS_ItemData_C* item) { return !(item->ShowInKeyMenu && !item->Unstackable); }
+
+// Host: its own inventory up to the agreed amounts.
+void TopUpSelf() {
+    for (const auto& [path, n] : g_ledger) {
+        SDK::UObject* obj = ue::LoadObject(path);
+        if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
+        auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
+        if (!Shared(item, path) || !TopUpAllowed(item)) continue;
+        const int have = CountOf(path);
+        const int give = OneOfAKind(item) ? (have > 0 ? 0 : 1) : n - have;
+        if (give > 0 && GiveItem(path, give)) QD_INFO(kTag, "catch-up: host brought up to {} x{} (+{})", path, n, give);
+    }
 }
 
 // Host: send every listed item to one player (they keep only what they lack).
@@ -1271,8 +1375,20 @@ void SendAmounts(uint8_t toSlot, int32_t arg, const std::vector<std::string>& pa
 
 void SendCatchUp(uint8_t toSlot) {
     if (!LedgerReady() || g_ledger.empty()) return;
-    SendAmounts(toSlot, 3, std::vector<std::string>(g_ledger.begin(), g_ledger.end()));
-    QD_INFO(kTag, "catch-up: sent the amounts of {} shared items to slot {}", g_ledger.size(), toSlot);
+    TopUpSelf();
+    net::MsgParty m;
+    m.kind = net::PartyKind::Gift;
+    m.toSlot = toSlot;
+    m.arg = 3;
+    for (const auto& [path, n] : g_ledger) {
+        m.items.push_back({path, std::clamp(n, 0, 9999)});
+        if (m.items.size() == net::kMaxPartyItems) {
+            Send(m);
+            m.items.clear();
+        }
+    }
+    if (!m.items.empty()) Send(m);
+    QD_INFO(kTag, "catch-up: sent the agreed amounts of {} shared items to slot {}", g_ledger.size(), toSlot);
 }
 
 bool g_catchUpAsked = false;
@@ -1349,7 +1465,9 @@ void ReceiveGift(const net::MsgParty& m) {
         auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
         if (!Shared(item, it.path)) continue;   // consumables and coins are traded, never shared
         const bool unique = OneOfAKind(item);
-        if (m.arg != 3) LedgerAdd(it.path);   // host: a friend's find belongs to this world too
+        if (coop::IsHost()) LedgerAdd(it.path, m.arg == 4 ? it.count : -1);   // the agreement only grows
+        if (topUp && !TopUpAllowed(item)) continue;
+        if (m.arg == 4) continue;   // the host: TopUpSelf below brings it up to the agreed amounts
         const int have = CountOf(it.path);
         int count;
         if (unique) count = have > 0 || (topUp && it.count <= 0) ? 0 : 1;
@@ -1367,6 +1485,7 @@ void ReceiveGift(const net::MsgParty& m) {
     if (many && got > 0) ui::Toast(ui::TrF("party.gift_many", got), ui::ToastKind::Info, 4.0f);
     // the friend's side of the catch-up: tell the host its own amounts, so the host is brought up too
     if (m.arg == 3 && !coop::IsHost() && !asked.empty()) SendAmounts(0, 4, asked);
+    if (m.arg == 4 && coop::IsHost()) TopUpSelf();
 }
 
 void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
@@ -1441,6 +1560,7 @@ void Tick(float) {
     TickRest(now);
     TickTrade(now);
     TickTradePrompt(now);
+    TickWatchdogs(now);
     TickCatchUp(now);
     ui::SetInputCapture("trade", s.trade.stage == TradeStage::Open);
 
@@ -1640,6 +1760,7 @@ void DrawTradeHud() {
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 8.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(560.0f, 0.0f), ImVec2(io.DisplaySize.x * 0.8f, io.DisplaySize.y * 0.8f));
+    g_tradeDrawnAt = Now();
     if (ImGui::Begin("##qd_trade", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {

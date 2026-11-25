@@ -6,11 +6,16 @@
 #pragma once
 #include <atomic>
 #include <functional>
+#include <string>
+#include <vector>
 
 #include "voice_pcm_queue.h"
 #include "reload/reload_state.h"
 
 namespace nvcoop::voice {
+
+// The active microphones (capture) or speakers, in the order the `device` numbers below count them. Any thread.
+std::vector<std::string> ListDevices(bool capture);
 
 // Microphone: pushes captured samples into a PcmQueue.
 class AudioCapture {

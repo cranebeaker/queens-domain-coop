@@ -596,7 +596,7 @@ bool Decode(const uint8_t* data, size_t size, MsgCharacter& out) {
     return DecodeInto(data, size, MsgType::Character, out, [](ByteReader& r, MsgCharacter& m) {
         uint8_t kind = 0;
         uint32_t n = 0;
-        if (!(r.U8(kind) && kind >= 1 && kind <= 5 && r.U8(m.purpose) && m.purpose <= 1 && r.U32(m.id) && r.U32(m.total) &&
+        if (!(r.U8(kind) && kind >= 1 && kind <= 7 && r.U8(m.purpose) && m.purpose <= 1 && r.U32(m.id) && r.U32(m.total) &&
               m.total <= kMaxCharacterBytes && r.U32(m.offset) && r.U32(n) && n <= 1024))
             return false;
         m.kind = static_cast<CharacterKind>(kind);
