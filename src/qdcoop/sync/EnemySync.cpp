@@ -1524,10 +1524,9 @@ void HostEvaluateOwners(double now) {
             if (want != OwnerOf(id).slot && MemberPresent(want)) changes.push_back({id, want, "成对", true});
             continue;
         }
-        // A downed owner keeps its enemies: its game still runs them (they only stop targeting that player). Handing
-        // them over the moment a player went down swapped every enemy near them at once, and an enemy the new owner's
-        // game had in another state showed that state (a disguised Looker, awake here, sank into the ground).
-        if (cur < net::kMaxPlayers && cur != 0xFF && MemberPresent(cur) && PartySlotDowned(cur)) continue;
+        // (1.4.3 kept a downed owner's enemies with it; on its own game they then kept attacking the downed player. The
+        // Looker that sank on a hand-over is fixed at its cause in ReleaseControl (mobileFor), so a downed player's enemies
+        // go to a teammate who stands again, like a dead one's.)
         // 1.0.6: bosses and every enemy that starts dormant (its spawner's behaviour mode is not the plain one) are
         // run by the host. A dormant enemy is woken, kept awake, made damageable and reset by game logic that only
         // looks at the machine it runs on - arena triggers, "damage off until triggered", "player left the arena" -
@@ -3369,6 +3368,11 @@ void ApplyEvent(const net::MsgEnemyEvent& ev) {
                 e.diedSentFor = en;   // set first: Kill -> ManagedEnemyDied must not echo a Died of our own
                 KillEnemy(en, ev.arg != 0, false);
                 e.nextReconcileAt = now + kKillRetrySec + 1.0;
+            }
+            // the boss died on another machine: its health bar goes now, not when this copy's death sequence ends
+            if (en && e.bossBar) {
+                CallBossBar(en, false);
+                QD_INFO(kTag, "{:016X} ({}): died on P{}, boss bar off", e.id, ue::Name(en), ev.ownerSlot + 1);
             }
             break;
         case net::EnemyEventType::BossBarOn:

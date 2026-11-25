@@ -627,7 +627,8 @@ void Build() {
         }
     }
 
-    Add(TextButton(Tr("page.back"), [] { Close(); }), 18.0f);
+    Add(NewText(TreeOf(p.title), Tr("page.f5_hint"), 0.65f, true), 16.0f);
+    Add(TextButton(Tr("page.back"), [] { Close(); }), 10.0f);
     p.shown = StateKey();
 }
 

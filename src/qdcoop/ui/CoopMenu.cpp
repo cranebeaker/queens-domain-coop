@@ -683,6 +683,7 @@ void DrawFixTab() {
         ui::Toast(Tr("fix.resync_done"), ui::ToastKind::Info);
     }
     ImGui::EndDisabled();
+    if (ImGui::Button(Tr("fix.unstuck"), ImVec2(320, 0))) sync::PartyUnstuck();
     ImGui::BeginDisabled(!s.inSession);
     if (ImGui::Button(Tr("fix.stand_up"), ImVec2(320, 0))) sync::PartyForceStandUp();
     if (ImGui::Button(Tr("coop.leave"), ImVec2(320, 0))) {

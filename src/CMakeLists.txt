@@ -107,6 +107,11 @@ target_include_directories(QDCoop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${QD_VENDO
 target_compile_definitions(QDCoop PRIVATE QD_DEV=${QD_DEV_VALUE})
 # wintrust + crypt32: Authenticode check of steam_api64.dll (core/Ownership.cpp).
 target_link_libraries(QDCoop PRIVATE qdcoop_net minhook imgui wintrust crypt32 winhttp bcrypt)
+# voice chat (qdcoop/voice, ported from the Fallout co-op project): Opus 1.4 (vendor/opus, BSD-3-Clause) + Windows audio (WASAPI).
+include(${QD_VENDOR}/opus/CMakeLists.txt)
+target_include_directories(QDCoop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/qdcoop/voice)
+target_compile_definitions(QDCoop PRIVATE NOMINMAX)
+target_link_libraries(QDCoop PRIVATE nvcoop_opus ole32 avrt)
 
 # ---------- xinput1_3 proxy loader ----------
 file(GLOB QD_PROXY_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/proxy/*.cpp ${CMAKE_CURRENT_SOURCE_DIR}/proxy/*.def)

@@ -8,5 +8,7 @@ void SummonInit();       // menu tab + ticker; call after ui::Init
 void SummonShutdown();
 // Client: teleport next to the host now (as the Teleport tab does). Game thread.
 void SummonToHost();
+// Teleport next to the player in `slot` (any player, the host included). Game thread.
+void SummonTo(unsigned char slot);
 
 }  // namespace qd::sync

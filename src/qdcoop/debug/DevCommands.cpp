@@ -24,6 +24,8 @@
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
 #include "qdcoop/sync/Lobby.h"
+#include "qdcoop/sync/Voice.h"
+#include "qdcoop/sync/Summon.h"
 #include "qdcoop/ui/CoopPage.h"
 #include "qdcoop/sync/Party.h"
 #include "qdcoop/sync/PoseDriver.h"
@@ -220,6 +222,8 @@ void Run(const std::string& line) {
         const int port = c == std::string::npos ? 27777 : std::atoi(arg.c_str() + c + 1);
         QD_INFO(kTag, "join {}", qd::coop::DevJoinUdp(ip, static_cast<uint16_t>(port)) ? "sent" : "not possible");
     }
+    else if (cmd == "summon") { int sl = 0; in >> sl; qd::sync::SummonTo(static_cast<unsigned char>(sl)); }
+    else if (cmd == "voice") { std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); qd::sync::VoiceDebug(rest); }
     else if (cmd == "page") { qd::ui::CoopPageDebugOpen(); }
     else if (cmd == "lobby") { std::string rest; std::getline(in, rest); if (!rest.empty() && rest[0] == ' ') rest.erase(0, 1); qd::sync::LobbyDebug(rest); }
     else if (cmd == "party") { std::string rest; std::getline(in, rest); qd::sync::PartyDebug(rest); }

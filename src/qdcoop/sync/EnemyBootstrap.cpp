@@ -10,6 +10,7 @@
 #include "qdcoop/sync/CoopCharacter.h"
 #include "qdcoop/sync/Lobby.h"
 #include "qdcoop/sync/Look.h"
+#include "qdcoop/sync/Voice.h"
 #include "qdcoop/sync/Party.h"
 #include "qdcoop/sync/Rules.h"
 #include "qdcoop/sync/Summon.h"
@@ -29,6 +30,7 @@ void StartWo4Modules() {
     LobbyInit();
     CharacterInit();
     LookInit();
+    VoiceInit();
     QD_INFO("bootstrap", "enemy modules ready (rules, enemy sync, summon)");
 }
 

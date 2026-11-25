@@ -19,6 +19,10 @@
 #include "imgui.h"
 
 #include <atomic>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
 #include <chrono>
 #include <cmath>
 
@@ -39,6 +43,8 @@ constexpr double  kDeathWindowSec = 180.0;  // died this recently before a world
 
 std::atomic<int>  g_mode{0};   // 0 not in a session, 1 host, 2 client (read by the render thread)
 std::atomic<bool> g_busy{false};
+std::mutex g_othersMx;
+std::vector<std::pair<uint8_t, std::string>> g_others;   // the players one can teleport to (render thread reads)
 
 using Clock = std::chrono::steady_clock;
 double Now() { return std::chrono::duration<double>(Clock::now().time_since_epoch()).count(); }
@@ -97,9 +103,10 @@ void EndHold(bool success) {
     if (success) ui::Toast(ui::Tr("summon.done"), ui::ToastKind::Success, 3.0f);
 }
 
-void DoSummon() {
+void DoSummon(uint8_t target = kHostSlot) {
     auto& s = S();
-    if (!coop::InSession() || coop::IsHost()) {
+    const auto local = coop::LocalSlot();
+    if (!coop::InSession() || !local || target == *local) {
         ui::Toast(ui::Tr("summon.only_client"), ui::ToastKind::Warning);
         return;
     }
@@ -116,7 +123,7 @@ void DoSummon() {
     bool hostDead = false, sameArea = false;
     net::Vec3f feet{};
     float yaw = 0;
-    if (!RemotePlayerInfo(kHostSlot, hostDead, sameArea) || !playersync::RemotePose(kHostSlot, feet, yaw)) {
+    if (!RemotePlayerInfo(target, hostDead, sameArea) || !playersync::RemotePose(target, feet, yaw)) {
         ui::Toast(ui::Tr("summon.no_pos"), ui::ToastKind::Warning);
         return;
     }
@@ -174,6 +181,13 @@ void Tick(float) {
     const bool inSession = coop::InSession();
     const bool client = inSession && !coop::IsHost();
     g_mode = !inSession ? 0 : client ? 2 : 1;
+    {
+        std::vector<std::pair<uint8_t, std::string>> others;
+        for (const auto& m : coop::Members())
+            if (inSession && m.present && !m.isLocal) others.emplace_back(m.slot, m.name);
+        std::lock_guard lk(g_othersMx);
+        g_others = std::move(others);
+    }
 
     SDK::UWorld* world = ue::World();
     SDK::ACharacter* ch = ue::LocalCharacter();
@@ -215,15 +229,26 @@ void Tick(float) {
 
 void DrawTab() {
     const int mode = g_mode.load();
-    if (mode == 2) {
-        ImGui::TextWrapped("%s", ui::Tr("summon.desc"));
+    if (mode != 0) {
+        ImGui::TextWrapped("%s", ui::Tr("summon.desc_any"));
         const bool busy = g_busy.load();
         ImGui::BeginDisabled(busy);
-        if (ImGui::Button(ui::Tr("summon.button"))) gamethread::Post([] { DoSummon(); });
+        std::vector<std::pair<uint8_t, std::string>> others;
+        {
+            std::lock_guard lk(g_othersMx);
+            others = g_others;
+        }
+        for (const auto& [slot, name] : others) {
+            ImGui::PushID(slot);
+            if (ImGui::Button(ui::TrF("summon.to", name).c_str())) {
+                const uint8_t t = slot;
+                gamethread::Post([t] { DoSummon(t); });
+            }
+            ImGui::PopID();
+        }
+        if (others.empty()) ImGui::TextDisabled("%s", ui::Tr("summon.nobody"));
         ImGui::EndDisabled();
         if (busy) ImGui::TextDisabled("%s", ui::Tr("summon.busy"));
-    } else if (mode == 1) {
-        ImGui::TextDisabled("%s", ui::Tr("summon.you_host"));
     } else {
         ImGui::TextDisabled("%s", ui::Tr("summon.solo"));
     }
@@ -231,7 +256,8 @@ void DrawTab() {
 
 }  // namespace
 
-void SummonToHost() { DoSummon(); }
+void SummonToHost() { DoSummon(kHostSlot); }
+void SummonTo(unsigned char slot) { DoSummon(slot); }
 
 void SummonInit() {
     auto& s = S();

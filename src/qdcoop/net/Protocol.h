@@ -8,7 +8,7 @@
 
 namespace qd::net {
 
-constexpr uint16_t kProtocolVersion = 13;   // v13: Look (avatar head); v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
+constexpr uint16_t kProtocolVersion = 14;   // v14: Voice (proximity chat); v13: Look (avatar head); v12: Character (host keeps friends' characters); v11: Party Gift (shared items); v10: Lobby (waiting room: ready up, the host's save start); v9: HpScale carries enemy damage (difficulty); v8: Party (revive, party rest, trading); v7: Call (boss / arena Blueprint calls); v6: WorldFlags in use, Hazard; v5: EnemyBlob, EnemyEvent Interacted (v4: Woke/CustomAttack, EnemyState flag bit4)
 constexpr int      kMaxPlayers = 4;
 constexpr size_t   kMaxNameBytes = 72;    // UTF-8, 24 CJK chars
 constexpr size_t   kMaxItemPathBytes = 256;   // MsgEquip::itemPath
@@ -18,6 +18,7 @@ enum class MsgType : uint8_t {
     PlayerState = 20, PlayerEvent, Equip = 22,
     EnemyStates = 40, EnemyEvent, DamageRequest, EnemyOwner = 45, EnemyBlob = 46, EnemyMontage = 47,
     WorldFlags = 60, InteractRequest, InteractResult, HpScale, Summon, Hazard = 65, Call = 66, Party = 67, Lobby = 68, Character = 69, Look = 70,
+    Voice = 71,   // [71][voice wire bytes] (qdcoop/voice/voice_wire.h), unreliable; the host relays (sync/Voice.cpp)
     Heartbeat = 250,   // consumed by Session
 };
 

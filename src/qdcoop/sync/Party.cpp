@@ -638,9 +638,23 @@ void OnMenuButton(hooks::CallInfo& ci, bool save) {
     ui::Toast(ui::Tr(save ? "party.save_sent" : "party.rest_sent"), ui::ToastKind::Info, 3.0f);
 }
 
+// The game's own teleport ending, as F5 > Fix > Unstuck does (a teleport that never finished left the player with no
+// input: 1.5.4, a party save from far away).
+void EndStuckTeleport(SDK::AFS_PlayerChar_C* p) {
+    if (!p || !ue::IsValid(p)) return;
+    char none = 0;
+    if (p->Teleporting || p->QuickTeleporting) {
+        Call(p, "FinishTeleport", none);
+        Call(p, "CleanUpTeleportProcess", none);
+    }
+    Call(p, "UnlockInputForLoadingOrCutscene", none);
+    Call(p, "SlightDelayEnableInput", none);
+}
+
 void RestFail(const char* key) {
     auto& s = S();
     QD_WARN(kTag, "party rest from slot {} not followed: {}", s.rest.from, key);
+    if (s.rest.step == RestStep::Travel) EndStuckTeleport(LocalPlayer());
     ui::Toast(ui::TrF(key, NameOf(s.rest.from)), ui::ToastKind::Warning, 5.0f);
     s.rest.step = RestStep::Idle;
     s.driving = false;
@@ -1154,7 +1168,7 @@ bool Shared(const SDK::UFS_ItemData_C* item, const std::string& path) {
     return item && !item->Consumable && path != kCoinItem;
 }
 bool OneOfAKind(const SDK::UFS_ItemData_C* item) {
-    return item->Unstackable || item->Weapon || item->Equippable;
+    return item->Unstackable;   // a stack (daggers) shares its amount
 }
 
 constexpr uint64_t kSettleMs = 0;   // a weapon is never given twice, so the starting inventory needs no wait
@@ -1224,7 +1238,7 @@ bool LedgerReady() {
             if (!raw || kv.Value() <= 0 || !ue::IsValid(raw) || !raw->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
             auto* it = static_cast<SDK::UFS_ItemData_C*>(raw);
             const std::string path = ue::PathName(it);
-            if (Shared(it, path) && OneOfAKind(it) && ue::Name(it) != "NullWeapon") g_ledger.insert(path);
+            if (Shared(it, path) && ue::Name(it) != "NullWeapon") g_ledger.insert(path);
         }
     }
     LedgerSave();
@@ -1238,20 +1252,27 @@ void LedgerAdd(const std::string& path) {
 }
 
 // Host: send every listed item to one player (they keep only what they lack).
-void SendCatchUp(uint8_t toSlot) {
-    if (!LedgerReady() || g_ledger.empty()) return;
+// arg 3: "bring yours up to these amounts" (host -> friend, who answers with arg 4: its own amounts of the same items,
+// and the host brings its own up to those). Either side ends with the higher amount of every shared item.
+void SendAmounts(uint8_t toSlot, int32_t arg, const std::vector<std::string>& paths) {
     net::MsgParty m;
     m.kind = net::PartyKind::Gift;
     m.toSlot = toSlot;
-    for (const auto& path : g_ledger) {
-        m.items.push_back({path, 1});
+    m.arg = arg;
+    for (const auto& path : paths) {
+        m.items.push_back({path, std::clamp(CountOf(path), 0, 9999)});
         if (m.items.size() == net::kMaxPartyItems) {
             Send(m);
             m.items.clear();
         }
     }
     if (!m.items.empty()) Send(m);
-    QD_INFO(kTag, "catch-up: sent the {} shared items to slot {}", g_ledger.size(), toSlot);
+}
+
+void SendCatchUp(uint8_t toSlot) {
+    if (!LedgerReady() || g_ledger.empty()) return;
+    SendAmounts(toSlot, 3, std::vector<std::string>(g_ledger.begin(), g_ledger.end()));
+    QD_INFO(kTag, "catch-up: sent the amounts of {} shared items to slot {}", g_ledger.size(), toSlot);
 }
 
 bool g_catchUpAsked = false;
@@ -1295,12 +1316,12 @@ void OnItemAdded(hooks::CallInfo& ci) {
     if (path.empty() || p->Count <= 0 || path.size() > net::kMaxItemPathBytes) return;
     SDK::UObject* obj = ue::LoadObject(path);
     if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass()) || !Shared(static_cast<SDK::UFS_ItemData_C*>(obj), path)) return;
-    const int count = OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj)) ? 1 : p->Count;
+    const int count = OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj)) ? 1 : std::clamp(p->Count, 1, 9999);
     if (ShopOpen()) {
         QD_INFO(kTag, "item {} x{} bought (shop open): not shared", path, p->Count);
         return;
     }
-    if (OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj))) LedgerAdd(path);
+    LedgerAdd(path);
     net::MsgParty m;
     m.kind = net::PartyKind::Gift;
     m.toSlot = net::kPartyAll;
@@ -1314,9 +1335,12 @@ void ReceiveGift(const net::MsgParty& m) {
         if (coop::IsHost()) SendCatchUp(m.fromSlot);
         return;
     }
+    const bool topUp = m.arg == 3 || m.arg == 4;
     int got = 0;
     const bool many = m.items.size() > 3;
+    std::vector<std::string> asked;
     for (const auto& it : m.items) {
+        if (m.arg == 3) asked.push_back(it.path);
         SDK::UObject* obj = ue::LoadObject(it.path);
         if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) {
             QD_WARN(kTag, "shared item {} not found", it.path);
@@ -1325,12 +1349,13 @@ void ReceiveGift(const net::MsgParty& m) {
         auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
         if (!Shared(item, it.path)) continue;   // consumables and coins are traded, never shared
         const bool unique = OneOfAKind(item);
-        if (unique) LedgerAdd(it.path);   // host: a friend's find belongs to this world too
-        if (unique && CountOf(it.path) > 0) {
-            QD_INFO(kTag, "shared item {} from {}: already have it", it.path, NameOf(m.fromSlot));
-            continue;
-        }
-        const int count = unique ? 1 : std::clamp(it.count, 1, 99);
+        if (m.arg != 3) LedgerAdd(it.path);   // host: a friend's find belongs to this world too
+        const int have = CountOf(it.path);
+        int count;
+        if (unique) count = have > 0 || (topUp && it.count <= 0) ? 0 : 1;
+        else if (topUp) count = std::max(0, std::min(it.count, 9999) - have);   // up to the other's amount
+        else count = std::clamp(it.count, 1, 9999);
+        if (count <= 0) continue;
         if (GiveItem(it.path, count)) {
             QD_INFO(kTag, "got shared item {} x{} from {}", it.path, count, NameOf(m.fromSlot));
             ++got;
@@ -1340,6 +1365,8 @@ void ReceiveGift(const net::MsgParty& m) {
         }
     }
     if (many && got > 0) ui::Toast(ui::TrF("party.gift_many", got), ui::ToastKind::Info, 4.0f);
+    // the friend's side of the catch-up: tell the host its own amounts, so the host is brought up too
+    if (m.arg == 3 && !coop::IsHost() && !asked.empty()) SendAmounts(0, 4, asked);
 }
 
 void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
@@ -1632,6 +1659,21 @@ void DrawTradeHud() {
 }
 
 }  // namespace
+
+void PartyUnstuck() {
+    gamethread::Post([] {
+        SDK::AFS_PlayerChar_C* p = LocalPlayer();
+        if (!p) return;
+        QD_INFO(kTag, "unstuck (Fix tab): teleporting {} quick {}", p->Teleporting, p->QuickTeleporting);
+        S().rest = RestJob{};
+        S().driving = false;
+        EndStuckTeleport(p);
+        if (p->CharacterMovement && ue::IsValid(p->CharacterMovement))
+            p->CharacterMovement->SetMovementMode(SDK::EMovementMode::MOVE_Falling, 0);
+        ui::SetInputCapture("trade", false);
+        ui::SetInputCapture("lobby", false);
+    });
+}
 
 void PartyForceStandUp() {
     gamethread::Post([] {
