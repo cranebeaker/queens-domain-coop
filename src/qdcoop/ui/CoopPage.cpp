@@ -533,6 +533,10 @@ void Build() {
     } else {
         // the players, each with where they are
         for (const auto& r : v.rows) AddPlayerRow(r, v);
+        // Steam's own invite window: pick friends, they get a "join game" invite
+        Add(TextButton(Tr("page.invite"), [] {
+            if (!coop::Session().OpenInviteOverlay()) Toast(Tr("page.invite_failed"), ToastKind::Error, 4.0f);
+        }));
         if (v.rows.size() <= 1) AddText(Tr("page.invite_hint"), 0.65f, true);
         if (v.onTitle && !v.started) {
             if (v.isHost) {

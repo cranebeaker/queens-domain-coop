@@ -386,6 +386,7 @@ bool InitImGui(IDXGISwapChain* sc) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+    io.ConfigWindowsMoveFromTitleBarOnly = true;   // dragging inside a window (a meter, a picture) never moves it
     io.LogFilename = nullptr;
     io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;   // never fight the game's cursor; we draw our own
     io.ConfigInputTrickleEventQueue = false;                   // our late overrides (cursor, modifiers) must win

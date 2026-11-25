@@ -419,6 +419,36 @@ void UploadIfChanged() {
     QD_INFO(kTag, "co-op character sent to the host ({} bytes, version {}, from {})", bytes.size(), version, newest.filename().string());
 }
 
+// ---- host: a one-off copy of the host's own character for a friend
+
+// ModSaved\characters\give_host_copy.txt on the host: the next time each friend joins, they get a copy of the host's
+// own character (levels, weapon upgrades, gear, items) instead of their own. Done once per friend; the friends done
+// are listed in give_host_copy.done.txt. Their old character is backed up on their PC as always.
+bool GiveHostCopy(uint8_t toSlot, uint64_t friendId, int hostSlot, uint32_t clientVer) {
+    const fs::path dir = fs::path(paths::ModSaved()) / L"characters";
+    std::error_code ec;
+    if (!fs::is_regular_file(dir / L"give_host_copy.txt", ec)) return false;
+    const fs::path done = dir / L"give_host_copy.done.txt";
+    const std::string id = std::to_string(friendId);
+    {
+        std::ifstream f(done);
+        for (std::string line; std::getline(f, line);)
+            if (line == id) return false;
+    }
+    const std::wstring name = SlotName(hostSlot, false, 0);
+    std::vector<uint8_t> bytes;
+    if (name.empty() || !ReadFile(SaveDir() / (name + L".sav"), bytes) || bytes.empty() || bytes.size() > net::kMaxCharacterBytes) {
+        QD_WARN(kTag, "host copy for slot {}: could not read the host's save of slot {}", toSlot, hostSlot);
+        return false;
+    }
+    const uint32_t own = static_cast<uint32_t>(std::max(0, ActiveVersion(ue::LocalCharacter())));
+    const uint32_t version = std::max(own, clientVer + 1);
+    SendFile(toSlot, 0, bytes, version);
+    std::ofstream(done, std::ios::app) << id << '\n';
+    QD_INFO(kTag, "gave slot {} a copy of the host's own character ({} bytes, version {}, theirs {})", toSlot, bytes.size(), version, clientVer);
+    return true;
+}
+
 // ---- messages
 
 void OnCharacter(uint8_t fromSlot, const uint8_t* data, size_t size) {
@@ -450,6 +480,7 @@ void OnCharacter(uint8_t fromSlot, const uint8_t* data, size_t size) {
             return;
         }
         if (m.kind == net::CharacterKind::Request) {
+            if (GiveHostCopy(fromSlot, *peer, hostSlot, m.total)) return;
             const fs::path p = HostStore(*peer, hostSlot);
             const uint32_t hostVer = HostVersion(p), clientVer = m.total;
             std::vector<uint8_t> bytes;

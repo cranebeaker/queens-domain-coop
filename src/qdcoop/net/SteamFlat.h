@@ -209,6 +209,7 @@ protected:
 
 // Nice-to-have exports outside the confirmed list: a missing one is logged but does not disable Steam.
 #define QD_STEAM_OPTIONAL_FUNCS(X) \
+    X(void, SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog, (ISteamFriends * self, uint64_t steamIDLobby))  \
     X(int, SteamAPI_ISteamMatchmaking_GetLobbyMemberLimit, (ISteamMatchmaking * self, uint64_t steamIDLobby))      \
     X(int, SteamAPI_ISteamNetworkingMessages_GetSessionConnectionInfo,                                                \
       (ISteamNetworkingMessages * self, const SteamNetworkingIdentity* identityRemote, void* pConnectionInfo,         \

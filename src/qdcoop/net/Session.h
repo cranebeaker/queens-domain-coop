@@ -79,6 +79,8 @@ public:
     PeerId             HostId() const;
     std::vector<PeerId> Peers() const;      // connected remote peers (host: all clients; client: just the host)
     uint64_t           LobbyId() const;
+    // Game thread. Opens Steam's own "invite friends to this lobby" overlay. False when not in a Steam lobby.
+    bool               OpenInviteOverlay();
     ITransport*        Transport();
 
     bool Send(PeerId to, Channel ch, const void* data, size_t size);

@@ -450,7 +450,8 @@ void DrawTab() {
         picker(ui::Tr("voice.mic_device"), "##micdev", "mic_device", s.micDevice, mics);
         picker(ui::Tr("voice.speaker_device"), "##spkdev", "speaker_device", s.speakerDevice, spk);
     }
-    // the meter: how loud the microphone is now; in voice activation, the mark where it starts sending
+    // the meter: how loud the microphone is now; in voice activation it is also the sensitivity slider: drag the
+    // gold mark (or click anywhere on the bar) to set where it starts sending
     {
         constexpr float kMax = 4000.0f;   // loudness at the right end (a shout is about 3000)
         auto pos = [](float v) { return std::sqrt(std::clamp(v, 0.0f, kMax) / kMax); };
@@ -458,16 +459,33 @@ void DrawTab() {
         ImGui::TextUnformatted(ui::Tr("voice.mic_level"));
         ImGui::SameLine();
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(w, h));
+        static float heldThreshold = -1.0f;   // render thread only: the value while the mark is dragged
+        ImGui::InvisibleButton("##voicemeter", ImVec2(w, h + 6.0f));
+        float threshold = heldThreshold > 0 ? heldThreshold : s.openThreshold;
+        if (mode == 1) {
+            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (ImGui::IsItemActive()) {
+                const float f = std::clamp((ImGui::GetIO().MousePos.x - p0.x) / w, 0.0f, 1.0f);
+                threshold = std::clamp(f * f * kMax, 50.0f, kMax);
+                heldThreshold = threshold;
+                ImGui::SetTooltip("%s %.0f", ui::Tr("voice.threshold"), threshold);
+            }
+            if (ImGui::IsItemDeactivated() && heldThreshold > 0) {
+                const std::string val = std::to_string(heldThreshold);
+                heldThreshold = -1.0f;
+                gamethread::Post([val] { SetSetting("open_threshold", val); });
+            }
+        }
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p1(p0.x + w, p0.y + h);
         dl->AddRectFilled(p0, p1, IM_COL32(28, 24, 30, 255));
-        const bool open = mode == 1 && v.level >= s.openThreshold;
+        const bool open = mode == 1 && v.level >= threshold;
         const bool sending = v.talking || open;
         dl->AddRectFilled(p0, ImVec2(p0.x + w * pos(v.level), p1.y), sending ? IM_COL32(110, 210, 120, 255) : IM_COL32(150, 140, 150, 255));
         if (mode == 1) {
-            const float x = p0.x + w * pos(s.openThreshold);
+            const float x = p0.x + w * pos(threshold);
             dl->AddLine(ImVec2(x, p0.y - 3.0f), ImVec2(x, p1.y + 3.0f), IM_COL32(240, 200, 90, 255), 2.5f);
+            dl->AddTriangleFilled(ImVec2(x - 6.0f, p1.y + 7.0f), ImVec2(x + 6.0f, p1.y + 7.0f), ImVec2(x, p1.y + 1.0f), IM_COL32(240, 200, 90, 255));
         }
         dl->AddRect(p0, p1, IM_COL32(120, 100, 70, 255));
         ImGui::SameLine();
@@ -480,11 +498,7 @@ void DrawTab() {
             ImGui::TextDisabled("%s", ui::Tr("voice.test_help"));
         }
     }
-    if (mode == 1) {
-        SettingSlider(ui::Tr("voice.threshold"), "open_threshold", s.openThreshold, 1.0f, 50.0f, 4000.0f, "%.0f", 340.0f,
-                      ImGuiSliderFlags_Logarithmic);
-        ImGui::TextDisabled("%s", ui::Tr("voice.threshold_help"));
-    }
+    if (mode == 1) ImGui::TextDisabled("%s", ui::Tr("voice.threshold_help"));
 
     ImGui::TextUnformatted(ui::Tr(mode == 1 ? "voice.key_also" : "voice.key"));
     ImGui::SameLine();

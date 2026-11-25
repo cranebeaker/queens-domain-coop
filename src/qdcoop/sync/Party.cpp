@@ -1313,8 +1313,9 @@ bool LedgerReady() {
         }
         QD_INFO(kTag, "shared-items list of slot {}: {} items", slot, g_ledger.size());
         MergeCorrections(slot);
-        return true;
     }
+    // whatever the host has now belongs to the agreement too (things found solo, or before the list kept them): a
+    // friend who joins gets everything shared the host owns
     if (SDK::UFS_SaveSlot_C* save = ActiveSave()) {
         for (auto& kv : save->InventoryContents) {
             SDK::UFS_Item* raw = kv.Key();
@@ -1325,7 +1326,7 @@ bool LedgerReady() {
         }
     }
     LedgerSave();
-    QD_INFO(kTag, "shared-items list of slot {} started from the host's items: {}", slot, g_ledger.size());
+    QD_INFO(kTag, "shared-items list of slot {} with the host's items: {}", slot, g_ledger.size());
     return true;
 }
 
@@ -1339,8 +1340,13 @@ void LedgerAdd(const std::string& path, int n = -1) {
     LedgerSave();
 }
 
-// A stack shown in the key menu (door keys and the like) is used up in the world: it is never topped up.
-bool TopUpAllowed(const SDK::UFS_ItemData_C* item) { return !(item->ShowInKeyMenu && !item->Unstackable); }
+// A stack shown in the key menu (door keys and the like) is used up in the world: it is never topped up. Gear kept
+// in the key menu (the knife belt, the scientist's weapon upgrades) is always shared.
+bool TopUpAllowed(const SDK::UFS_ItemData_C* item) {
+    if (!(item->ShowInKeyMenu && !item->Unstackable)) return true;
+    const std::string path = ue::PathName(item);
+    return path.find("KnifeBelt") != std::string::npos || path.find("WeaponUpgradeUnlock") != std::string::npos;
+}
 
 // Host: its own inventory up to the agreed amounts.
 void TopUpSelf() {

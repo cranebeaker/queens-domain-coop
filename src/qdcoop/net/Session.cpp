@@ -1052,6 +1052,13 @@ std::vector<PeerId> Session::Peers() const {
 
 uint64_t Session::LobbyId() const { return impl_->lobbyId; }
 
+bool Session::OpenInviteOverlay() {
+    auto& d = *impl_;
+    if (!d.Steam() || d.lobbyId == 0 || !d.api->friends || !d.api->SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog) return false;
+    d.api->SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog(d.api->friends, d.lobbyId);
+    return true;
+}
+
 // Callers get the locking wrapper, never the raw transport (it may be used by the keepalive thread at the same time).
 ITransport* Session::Transport() { return impl_->transport ? &impl_->tx : nullptr; }
 
