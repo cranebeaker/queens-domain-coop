@@ -290,8 +290,7 @@ bool SetAutosave(const std::string& mode) {
         Sanitize(*c);
     }
     if (paths::ModDir().empty() || !g_fileUsable) return false;
-    if (!WriteFileAtomic(ConfigPath(), ToJson(g_file).dump(2) + "
-")) {
+    if (!WriteFileAtomic(ConfigPath(), ToJson(g_file).dump(2) + "\n")) {
         QD_WARN(kTag, "could not write autosave '{}' to config.json", mode);
         return false;
     }
