@@ -677,6 +677,21 @@ void Tick(float dt) {
     if (reindexed) {
         s.indexIn = kIndexSec;
         RebuildIndex();
+        // 1.6.11: a pickup someone already took is gone here too, also one that was not in the index when its
+        // "taken" arrived (a drop a few seconds old stayed on the ground, and picking it up again doubled it)
+        if (!s.taken.empty()) {
+            SDK::UClass* pick = SDK::AItemPickup_Base_C::StaticClass();
+            for (const Guid& g : s.taken) {
+                auto it = s.live.find(g);
+                if (it == s.live.end()) continue;
+                for (const LiveRef& r : it->second) {
+                    if (r.index != 0 || !ue::IsValid(r.actor) || !pick || !r.actor->IsA(pick) || PartyPickingUp(r.actor)) continue;
+                    QD_INFO(kTag, "{} was already picked up by someone: removed", ue::Name(r.actor));
+                    CallNoParams(r.actor, "DeleteDropData");
+                    r.actor->K2_DestroyActor();
+                }
+            }
+        }
     }
     Snapshot cur = Read(save);
 
@@ -766,6 +781,16 @@ void OnMember(const coop::Member& m, bool joined) {
 }  // namespace
 
 bool WorldSyncReplaying() { return S().replaying; }
+
+bool WorldSyncPickupTaken(const void* pickup) {
+    auto& s = S();
+    if (!pickup || s.taken.empty() || !ue::IsValid(static_cast<const SDK::UObject*>(pickup))) return false;
+    auto* a = static_cast<const SDK::ASavableActor_C*>(pickup);
+    if (!a->IsA(SDK::ASavableActor_C::StaticClass())) return false;
+    for (const SDK::FGuid& g : a->GUIDs)
+        if (s.taken.count(ToGuid(g))) return true;
+    return false;
+}
 
 void WorldSyncRequestFull() {
     if (!coop::InSession() || coop::IsHost()) return;

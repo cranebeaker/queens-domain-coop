@@ -101,6 +101,7 @@ struct State {
     // last rested at; a character that never rested came back at the map's new-game start, far from the party
     // (play test). A death reload now travels to the host's checkpoint, as joining does.
     double diedAt = -1e9;
+    bool saveWanted = false;    // 1.6.11: the host saved; ours follows
     SDK::UWorld* lastWorld = nullptr;
     bool afterDeath = false;
     double nextSave = 0;
@@ -702,11 +703,13 @@ void Tick(float) {
         }
     }
     TickPlace(p, now);
-    // regularly: the game's own save of the co-op character (then sent to the host by the upload check)
-    if (now >= s.nextSave && s.place == Place::Done || (now >= s.nextSave && s.place == Place::None)) {
-        s.nextSave = now + kSaveEverySec;
-        if (!p->IsDead && !p->Teleporting && !p->QuickTeleporting && !p->InIntroCutscene && !p->CurrentCutsceneManager)
-            SaveNow(ch, "every two minutes");
+    // 1.6.11: the co-op character is saved when the host's game is (autosave, a checkpoint's Save), not on its own
+    // timer: a game over reloads the host's save and this file, and they now hold the same moment (before, a friend
+    // kept items the host lost). Then sent to the host by the upload check.
+    if (s.saveWanted && (s.place == Place::Done || s.place == Place::None) && !p->IsDead && !p->Teleporting &&
+        !p->QuickTeleporting && !p->InIntroCutscene && !p->CurrentCutsceneManager) {
+        s.saveWanted = false;
+        SaveNow(ch, "with the host");
     }
     if (now >= s.nextUploadCheck) {
         s.nextUploadCheck = now + kUploadCheckSec;
@@ -752,6 +755,10 @@ void CharacterHostNewGame(int slot) {
         }
     }
     if (n) QD_INFO(kTag, "new game in slot {}: {} character(s) kept for its old game removed", slot, n);
+}
+
+void CharacterHostSaved() {
+    if (!coop::IsHost()) S().saveWanted = true;
 }
 
 void CharacterInit() {

@@ -1546,6 +1546,14 @@ void TickCatchUp(double now) {
     Send(m);
 }
 
+// 1.6.11, host: its game was saved (autosave, a checkpoint's Save, the game's own): friends save their character too
+void OnGameSaved(hooks::CallInfo&) {
+    if (!coop::InSession() || !coop::IsHost()) return;
+    net::MsgParty m;
+    m.kind = net::PartyKind::Saved;
+    Send(std::move(m));
+}
+
 void OnItemAdded(hooks::CallInfo& ci) {
     if (g_giving || !ci.params || !coop::InSession() || WorldSyncReplaying() || BossSyncReplaying()) return;
     SDK::ACharacter* ch = ue::LocalCharacter();
@@ -1562,6 +1570,19 @@ void OnItemAdded(hooks::CallInfo& ci) {
     SDK::UObject* obj = ue::LoadObject(path);
     if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass()) || !Shared(static_cast<SDK::UFS_ItemData_C*>(obj), path)) return;
     const int count = OneOfAKind(static_cast<SDK::UFS_ItemData_C*>(obj)) ? 1 : std::clamp(p->Count, 1, 9999);
+    // 1.6.11: a pickup someone already took (still on the ground here for a moment): no second copy
+    if (g_pickupSince > 0 && WorldSyncPickupTaken(g_pickupOwner)) {
+        QD_INFO(kTag, "{} came from a pickup someone already took: given back", path);
+        const std::string taken = path;
+        const int n = p->Count;
+        gamethread::Post([taken, n] {
+            g_giving = true;
+            TakeItem(taken, n);
+            g_giving = false;
+        });
+        ui::Toast(ui::Tr("party.already_taken"), ui::ToastKind::Info, 3.0f);
+        return;
+    }
     if (ShopOpen()) {
         QD_INFO(kTag, "item {} x{} bought (shop open): not shared", path, p->Count);
         return;
@@ -1663,6 +1684,9 @@ void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
         case net::PartyKind::Rest:
             if (s.rest.step != RestStep::Idle) return;   // one at a time
             StartRest(m);
+            return;
+        case net::PartyKind::Saved:
+            if (m.fromSlot == 0) CharacterHostSaved();
             return;
         default:
             OnTradeMsg(m);
@@ -2084,6 +2108,7 @@ void PartyInit() {
     s.hooks.push_back(hooks::AddPost(kFnRestButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, false); }));
     s.hooks.push_back(hooks::AddPost(kFnSaveButton, [](hooks::CallInfo& ci) { OnMenuButton(ci, true); }));
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:AddItemToInventory", OnItemAdded));
+    s.hooks.push_back(hooks::AddPost("/Game/Blueprints/SaveSystem/SaveFunctions.SaveFunctions_C:SaveGameToDisk", OnGameSaved));
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/ItemPickupAnimationComp.ItemPickupAnimationComp_C:StartPickupPause", OnPickupPauseStart));
     s.hooks.push_back(hooks::AddPost("/Game/Blueprints/ItemPickupAnimationComp.ItemPickupAnimationComp_C:EndPickupPause", OnPickupPauseEnd));
     const std::string pc = kPlayerClass;

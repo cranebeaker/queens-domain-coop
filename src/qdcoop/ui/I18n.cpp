@@ -425,6 +425,7 @@ constexpr Entry kTable[] = {
     {"party.hud_being_revived", "{} is reviving you", "{} 正在救你", "{} が蘇生しています"},
     {"party.hud_down", "You are down. Wait for a teammate, or hold Interact to give up.", "你倒地了。等待队友救援，或按住交互键放弃。",
                                "ダウンしました。仲間を待つか、インタラクト長押しで諦めます。"},
+    {"party.already_taken", "A teammate already picked that up", "队友已经捡走了", "仲間がもう拾っています"},
     {"autosave.title", "Autosave", "自动存档", "オートセーブ"},
     {"autosave.both", "Every 2 min + big moments", "每2分钟 + 重要时刻", "2分ごと + 重要な時"},
     {"autosave.moments", "Big moments only", "仅重要时刻", "重要な時だけ"},

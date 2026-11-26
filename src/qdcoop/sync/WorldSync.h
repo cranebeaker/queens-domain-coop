@@ -19,5 +19,7 @@ void WorldSyncRequestFull();
 // True when a received event ran on this object in the last `seconds` (a pot broken by another player rolls its loot
 // at the end of its break animation, after the replay itself has returned).
 bool WorldSyncReplayedRecently(const void* obj, double seconds);
+// 1.6.11: the pickup was already picked up by someone (its GUID is in the shared "taken" list)
+bool WorldSyncPickupTaken(const void* pickup);
 
 }  // namespace qd::sync

@@ -167,6 +167,7 @@ struct MsgCall {
 // TradeDone   the receiver of a commit carried it out (arg 1) or could not (0)
 enum class PartyKind : uint8_t {
     Downed = 1, Reviving, Revive, Rest,
+    Saved = 5,   // 1.6.11, host -> everyone: the host's game was just saved; friends save their character now
     TradeRequest = 10, TradeAccept, TradeDecline, TradeCancel, TradeOffer, TradeConfirm, TradeCommit, TradeDone,
     Gift = 20,   // the sender got items (picked up, from an NPC, a chest, an altar...; never bought): items = what
 };

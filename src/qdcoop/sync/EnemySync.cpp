@@ -1236,6 +1236,14 @@ void Rebuild(double now) {
     }
     for (SDK::AActor* a : enemies) {
         auto* en = static_cast<SDK::AEnemyBase_C*>(a);
+        // 1.6.11: a dead enemy keeps its id while its actor is there. Its loot is rolled at the end of its death, and
+        // an enemy that is not a spawner's (Star Lizards) had left this map by then: the roll counted as "not an
+        // enemy" and every machine rolled its own loot sack (play test: one sack on the host, two on the friend).
+        if (Valid(en) && en->bDead && !byEnemy.contains(en))
+            if (auto old = s.byEnemy.find(en); old != s.byEnemy.end()) {
+                byEnemy[en] = old->second;
+                continue;
+            }
         if (!Valid(en) || IsPreview(en) || en->bDead || byEnemy.contains(en)) continue;
         uint64_t id = 0;
         if (Valid(en->OwningSpawner)) {
