@@ -54,7 +54,8 @@ struct MsgPlayerState {          // Unreliable, 20 Hz. Host relays clients' stat
     uint8_t  hpPct = 100;        // 0..100
     uint16_t areaId = 0;         // hash16 of the current area name
 };
-enum class PlayerEventType : uint8_t { Attack = 1, Hit, Died, Respawned, Teleported, EnterUI, ExitUI };
+enum class PlayerEventType : uint8_t { Attack = 1, Hit, Died, Respawned, Teleported, EnterUI, ExitUI,
+                                      Ping = 8 };   // 1.6.13: pos = the spot the player pinged (middle mouse)
 struct MsgPlayerEvent { uint8_t slot = 0; PlayerEventType type = PlayerEventType::Attack; int32_t arg = 0; Vec3f pos; };
 // Reliable, on change + once to every member that joins. Host relays clients' Equip to the other clients (slot
 // rewritten to the sender's real slot). itemPath = path of the in-hand weapon's FS_ItemData_C asset, <= kMaxItemPathBytes

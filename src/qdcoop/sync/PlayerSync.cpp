@@ -19,6 +19,8 @@
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
 
+#include <Windows.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -52,6 +54,21 @@ constexpr float  kDummyDistance    = 300.0f;
 constexpr float  kEquipPollSec     = 0.25f;    // how often the local in-hand weapon is read
 constexpr unsigned kHostColor  = 0xFF78D7FFu;  // IM_COL32(255,215,120,255)
 constexpr unsigned kOtherColor = 0xFFFFFFFFu;  // IM_COL32(255,255,255,255)
+// 1.6.13: pings (middle mouse): the spot the player looks at, shown to everyone for kPingSec, fading out at the end
+constexpr double kPingSec      = 5.0;
+constexpr double kPingFadeSec  = 1.0;
+constexpr double kPingMinGap   = 0.4;
+constexpr float  kPingRangeCm  = 20000.0f;
+constexpr unsigned kPingFriendColor = 0xFF7FE07Fu;   // IM_COL32(127,224,127,255)
+struct Ping { net::Vec3f pos; uint8_t slot = 0; double at = 0; };
+std::vector<Ping> g_pings;   // game thread
+bool   g_pingHeld = false;
+double g_lastPingAt = -1e9;
+
+void AddPing(uint8_t slot, const net::Vec3f& pos, double now) {
+    std::erase_if(g_pings, [slot](const Ping& p) { return p.slot == slot; });   // one per player: the newest
+    g_pings.push_back({pos, slot, now});
+}
 constexpr unsigned kDummyColor = 0xFFC3A7F2u;  // IM_COL32(242,167,195,255) — accent pink
 
 using Clock = std::chrono::steady_clock;
@@ -436,6 +453,9 @@ void OnPlayerEvent(uint8_t fromSlot, const uint8_t* data, size_t size) {
         case net::PlayerEventType::Attack:
             if (r.puppet) r.puppet->TriggerAttack();
             break;
+        case net::PlayerEventType::Ping:
+            AddPing(fromSlot, e.pos, Now());
+            break;
         case net::PlayerEventType::Died:
         case net::PlayerEventType::Respawned:
         case net::PlayerEventType::Teleported:
@@ -539,6 +559,62 @@ void Tick(float dt) {
         }
     }
     std::vector<ui::WorldLabel> labels;
+
+    // ---- pings: middle mouse (only while the game has the focus and no menu is open)
+    {
+        bool down = false;
+        if (inGame && inSession && lc.pc && !ui::IsMenuOpen()) {
+            HWND fg = GetForegroundWindow();
+            DWORD pid = 0;
+            GetWindowThreadProcessId(fg, &pid);
+            down = pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+        }
+        if (down && !g_pingHeld && now - g_lastPingAt >= kPingMinGap) {
+            g_lastPingAt = now;
+            SDK::FRotator rot = lc.pc->ControlRotation;
+            if (lc.pc->PlayerCameraManager && ue::IsValid(lc.pc->PlayerCameraManager)) rot = lc.pc->PlayerCameraManager->GetCameraRotation();
+            const float yaw = rot.Yaw * 3.14159265f / 180.0f, pitch = rot.Pitch * 3.14159265f / 180.0f;
+            const SDK::FVector dir(std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), std::sin(pitch));
+            const SDK::FVector end(lc.camLoc.X + dir.X * kPingRangeCm, lc.camLoc.Y + dir.Y * kPingRangeCm,
+                                   lc.camLoc.Z + dir.Z * kPingRangeCm);
+            SDK::FHitResult hit{};
+            SDK::TArray<SDK::AActor*> ignore;
+            const bool blocked = SDK::UKismetSystemLibrary::LineTraceSingle(ch, lc.camLoc, end, SDK::ETraceTypeQuery::TraceTypeQuery1, false,
+                                                                            ignore, SDK::EDrawDebugTrace::None, &hit, true,
+                                                                            SDK::FLinearColor(), SDK::FLinearColor(), 0.0f);
+            if (blocked && hit.bBlockingHit) {
+                const net::Vec3f at{hit.ImpactPoint.X, hit.ImpactPoint.Y, hit.ImpactPoint.Z};
+                if (auto slot = coop::LocalSlot()) {
+                    AddPing(*slot, at, now);
+                    SendEvent(net::PlayerEventType::Ping, *slot, at);
+                }
+            }
+        }
+        g_pingHeld = down;
+        std::erase_if(g_pings, [now](const Ping& p) { return now - p.at > kPingSec || !coop::InSession(); });
+        if (lc.pc)
+            for (const Ping& pg : g_pings) {
+                const SDK::FVector w(pg.pos.x, pg.pos.y, pg.pos.z + 30.0f);
+                SDK::FVector2D scr;
+                if (!lc.pc->ProjectWorldLocationToScreen(w, &scr, false)) continue;
+                if (scr.X < 0 || scr.Y < 0 || (lc.vw > 0 && scr.X > lc.vw) || (lc.vh > 0 && scr.Y > lc.vh)) continue;
+                const double left = kPingSec - (now - pg.at);
+                const float dx = w.X - lc.camLoc.X, dy = w.Y - lc.camLoc.Y, dz = w.Z - lc.camLoc.Z;
+                const int meters = static_cast<int>(std::sqrt(dx * dx + dy * dy + dz * dz) / 100.0f);
+                std::string who;
+                for (const auto& m : coop::Members())
+                    if (m.slot == pg.slot) who = m.name;
+                if (who.empty()) who = ui::Tr("name.default") + std::to_string(pg.slot + 1);
+                ui::WorldLabel l;
+                l.screenX = scr.X;
+                l.screenY = scr.Y;
+                l.alpha = static_cast<float>(std::clamp(left / kPingFadeSec, 0.0, 1.0));
+                l.text = who + "  " + std::to_string(meters) + " m";
+                l.color = pg.slot == 0 ? kHostColor : kPingFriendColor;   // host gold, friends green
+                l.ping = true;
+                labels.push_back(std::move(l));
+            }
+    }
 
     // ---- network -> puppets
     const auto& members = coop::Members();

@@ -482,6 +482,22 @@ void DrawWorldLabels() {   // behind the menu (background list): a name tag neve
     ImDrawList* dl = ImGui::GetBackgroundDrawList();
     for (const auto& l : labels) {
         if (l.alpha <= 0.01f || l.text.empty()) continue;
+        if (l.ping) {   // a diamond on the spot with a ring around it, the text above
+            const ImVec2 c(std::floor(l.screenX), std::floor(l.screenY));
+            const float al = std::clamp(l.alpha, 0.0f, 1.0f);
+            const ImU32 col = (l.color & ~IM_COL32_A_MASK) | (static_cast<ImU32>(al * 255.0f) << IM_COL32_A_SHIFT);
+            const ImU32 dark = static_cast<ImU32>(al * 160.0f) << IM_COL32_A_SHIFT;
+            const float r = 9.0f;
+            dl->AddCircle(c, r + 6.0f, dark, 24, 4.0f);
+            dl->AddCircle(c, r + 6.0f, col, 24, 2.0f);
+            ImVec2 q[4] = {ImVec2(c.x, c.y - r), ImVec2(c.x + r, c.y), ImVec2(c.x, c.y + r), ImVec2(c.x - r, c.y)};
+            dl->AddConvexPolyFilled(q, 4, col);
+            dl->AddPolyline(q, 4, dark, ImDrawFlags_Closed, 1.5f);
+            const ImVec2 ts = ImGui::CalcTextSize(l.text.c_str());
+            DrawOutlinedText(dl, ImVec2(std::floor(c.x - ts.x * 0.5f), std::floor(c.y - r - 10.0f - ts.y)), l.color, l.alpha,
+                             l.text);
+            continue;
+        }
         const ImVec2 size = ImGui::CalcTextSize(l.text.c_str());
         DrawOutlinedText(dl, ImVec2(std::floor(l.screenX - size.x * 0.5f), std::floor(l.screenY - size.y)), l.color, l.alpha,
                          l.text);

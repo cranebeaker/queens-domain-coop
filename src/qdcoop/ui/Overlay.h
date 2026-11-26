@@ -49,6 +49,7 @@ struct WorldLabel {
     float       alpha = 1;                  // distance fade
     std::string text;                       // UTF-8
     unsigned    color = 0xFFFFFFFF;         // ABGR (ImGui IM_COL32)
+    bool        ping = false;               // 1.6.13: a ping marker at screenX/Y, text above it
 };
 void PublishWorldLabels(std::vector<WorldLabel> labels);   // thread-safe
 
