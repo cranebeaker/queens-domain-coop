@@ -4037,6 +4037,22 @@ SDK::AActor* EnemyActorOfId(uint64_t id) {
     return it->second.enemy;
 }
 bool EnemyOwnedHere(uint64_t id) { return IsMine(id); }
+// 1.6.15: an enemy within `cm` of a player (any machine's) is chasing or attacking: a fight is going on (no autosave)
+bool EnemySyncFightNear(float cm) {
+    auto& s = S();
+    if (!s.active) return false;
+    std::vector<SDK::FVector> players;
+    if (SDK::ACharacter* ch = ue::LocalCharacter(); ch && ue::IsValid(ch)) players.push_back(ch->K2_GetActorLocation());
+    for (const Cand& c : s.cands) players.push_back(c.pos);
+    for (const auto& [id, e] : s.entries) {
+        SDK::AEnemyBase_C* en = Valid(e.enemy) ? e.enemy : nullptr;
+        if (!en || en->bDead || !(en->bAggrod || en->bIsChasing || en->bIsAttacking)) continue;
+        const SDK::FVector at = en->K2_GetActorLocation();
+        for (const SDK::FVector& p : players)
+            if (Dist(at, p) <= cm) return true;
+    }
+    return false;
+}
 uint64_t EnemyIdForNewActor(const SDK::AActor* actor) { return actor ? ue::Fnv1a64(ue::PathName(actor)) : 0; }
 void EnemySyncAlias(const SDK::AActor* actor, uint64_t id) {
     auto& s = S();

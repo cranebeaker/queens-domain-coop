@@ -1723,8 +1723,16 @@ constexpr double kAutosaveEverySec = 120.0;
 constexpr double kMomentDelaySec   = 3.0;    // after the pickup's own animation
 double g_nextAutosave = 0, g_momentAt = -1;
 
+constexpr float  kFightRangeCm = 5000.0f;   // 1.6.15: no autosave while an enemy this close to a player fights ...
+constexpr double kFightCalmSec = 5.0;       // ... and until it has been calm this long
+double g_lastFightAt = -1e9;
+
 bool SafeToSave(SDK::AFS_PlayerChar_C* p) {
     auto& s = S();
+    // 1.6.15: never mid-fight (play test: an autosave during a golem fight, then a game over, and the golem was gone
+    // after the reload)
+    if (EnemySyncFightNear(kFightRangeCm)) g_lastFightAt = Now();
+    if (Now() - g_lastFightAt < kFightCalmSec) return false;
     if (!p || p->IsDead || p->Teleporting || p->QuickTeleporting || p->Resting || GameBusy(p)) return false;
     if (s.localDowned || s.rest.step != RestStep::Idle || g_pickupSince > 0) return false;
     for (const auto& m : coop::Members())

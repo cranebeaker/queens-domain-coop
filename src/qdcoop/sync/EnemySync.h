@@ -54,6 +54,7 @@ void ActorsOfClass(SDK::UClass* cls, std::vector<SDK::AActor*>& out);
 uint64_t     EnemyIdOfActor(const SDK::AActor* actor);
 SDK::AActor* EnemyActorOfId(uint64_t id);
 bool         EnemyOwnedHere(uint64_t id);
+bool         EnemySyncFightNear(float cm);   // 1.6.15: an enemy near a player is chasing or attacking
 // Boss, miniboss or elite (boss bar shown, or the elite / boss tier). BossSync mirrors their hitboxes.
 bool         EnemyIsBossLike(uint64_t id);
 // Adds a boss spawns while it fights (Necronomicon zombies, Whaleking fish) have no spawner, so their id is a hash of
