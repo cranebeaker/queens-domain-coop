@@ -70,6 +70,7 @@ uint64_t g_toneSamples = 0, g_toneLastMs = 0;
 // what the F5 tab and the indicator show (written on the game thread, read on the render thread)
 struct View {
     bool on = false, inSession = false, talking = false, micFailed = false, speakersFailed = false;
+    bool global = false;   // everyone heard evenly (lobby, loading, cutscene)
     float level = 0;
     std::array<bool, kMaxSlots> heard{}, present{}, muted{};
     std::array<float, kMaxSlots> gain{};
@@ -141,6 +142,15 @@ Where Listener() {
     w.pos = Vec3{p.X, p.Y, p.Z};
     w.yaw = PlacementYaw(yaw);
     return w;
+}
+
+// 1.6.7: the local player is in a cutscene (the story scenes play for the whole party, and the cameras move away from
+// the bodies): everybody is heard evenly then, not by where the bodies stand.
+bool LocalInCutscene() {
+    auto* p = static_cast<SDK::AFS_PlayerChar_C*>(ue::LocalCharacter());
+    if (!p || !ue::IsValid(p) || !p->IsA(SDK::AFS_PlayerChar_C::StaticClass())) return false;
+    return p->InIntroCutscene ||
+           (p->CurrentCutsceneManager && ue::IsValid(reinterpret_cast<const SDK::UObject*>(p->CurrentCutsceneManager)));
 }
 
 Where Speaker(uint8_t slot) {
@@ -305,12 +315,19 @@ void Tick(float) {
     v.inSession = true;
     for (const auto& m : coop::Members())
         if (m.present && m.slot < kMaxSlots) v.names[m.slot] = m.name;
+    // 1.6.7: no body of our own (the lobby on the main menu, a level loading) or a cutscene: everyone in the session is
+    // heard evenly at full volume (before, nobody was heard in the lobby: there were no places to put the voices)
+    bool memberIn[kMaxSlots] = {};
+    for (const auto& m : coop::Members())
+        if (m.present && m.slot < kMaxSlots) memberIn[m.slot] = true;
+    const bool global = g_set.globalFallback && (!me.present || LocalInCutscene());
     for (uint8_t slot = 0; slot < kMaxSlots; ++slot) {
         if (slot == *local) continue;
         const Where them = Speaker(slot);
-        places[slot] = computePlacement(me, them, pc);
-        v.present[slot] = them.present;
+        places[slot] = global ? (memberIn[slot] ? globalPlacement(1.0f) : Placement{}) : computePlacement(me, them, pc);
+        v.present[slot] = global ? memberIn[slot] : them.present;
     }
+    v.global = global;
     {
         std::lock_guard lk(g_mtx);
         if (!g_session) return;
@@ -593,9 +610,9 @@ void VoiceDebug(const std::string& args) {
             played = g_session->stats().played;
         }
     }
-    QD_INFO(kTag, "voice status {{\"on\":{},\"talking\":{},\"tone\":{},\"key\":{},\"sent\":{},\"received\":{},\"relayed\":{},\"played\":{},"
+    QD_INFO(kTag, "voice status {{\"on\":{},\"global\":{},\"talking\":{},\"tone\":{},\"key\":{},\"sent\":{},\"received\":{},\"relayed\":{},\"played\":{},"
                   "\"mic\":{},\"speakers\":{},\"slots\":[{}]}}",
-            v.inSession, v.talking, g_tone, g_forceKey, sent, received, relayed, played, !v.micFailed, !v.speakersFailed, heard);
+            v.inSession, v.global, v.talking, g_tone, g_forceKey, sent, received, relayed, played, !v.micFailed, !v.speakersFailed, heard);
 }
 #endif
 

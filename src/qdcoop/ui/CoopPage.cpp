@@ -404,9 +404,14 @@ void AddPlayerRow(const sync::LobbyRow& r, const sync::LobbyView& v) {
         SDK::Params::ContentWidget_SetContent sc{};
         sc.Content = badge;
         Call(pill, "SetContent", sc);
-        RowAdd(row, pill, 0.0f);
+        RowAdd(row, pill, 14.0f);
     } else {
-        RowAdd(row, badge, 0.0f);
+        RowAdd(row, badge, 14.0f);
+    }
+    // 1.6.7: the host can remove a friend with the X at the end of their row
+    if (v.isHost && !r.isLocal) {
+        const uint8_t slot = r.slot;
+        RowAdd(row, TextButton("X", [slot] { coop::HostKick(slot); }), 0.0f);
     }
     Add(row);
 }

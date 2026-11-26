@@ -183,10 +183,13 @@ void StatusLine(const Snapshot& s) {
 
 void DrawMembers(const Snapshot& s) {
     ImGui::SeparatorText(Tr("coop.members"));
-    if (ImGui::BeginTable("##members", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+    // 1.6.7: the host gets an X at the end of each friend's row to remove them
+    const bool kick = s.isHost && s.inSession;
+    if (ImGui::BeginTable("##members", kick ? 4 : 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn(Tr("coop.col.slot"), ImGuiTableColumnFlags_WidthFixed, 70.0f);
         ImGui::TableSetupColumn(Tr("coop.col.name"), ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn(Tr("coop.col.ping"), ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        if (kick) ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28.0f);
         ImGui::TableHeadersRow();
         for (const auto& m : s.members) {
             ImGui::TableNextRow();
@@ -200,6 +203,18 @@ void DrawMembers(const Snapshot& s) {
             if (m.isLocal) ImGui::TextDisabled("-");
             else if (m.ping < 0) ImGui::TextDisabled("?");
             else ImGui::TextColored(m.ping < 80 ? kColOk : (m.ping < 180 ? kColWarn : kColErr), "%d ms", m.ping);
+            if (kick) {
+                ImGui::TableNextColumn();
+                if (!m.isLocal) {
+                    ImGui::PushID(m.slot);
+                    if (ImGui::SmallButton("X")) {
+                        const uint8_t slot = m.slot;
+                        gamethread::Post([slot] { coop::HostKick(slot); });
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", TrF("coop.kick", m.name).c_str());
+                    ImGui::PopID();
+                }
+            }
         }
         ImGui::EndTable();
     }

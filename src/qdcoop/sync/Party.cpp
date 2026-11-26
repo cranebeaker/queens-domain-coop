@@ -184,6 +184,7 @@ struct State {
     // revive
     bool   localDowned = false;
     double downedAt = 0;
+    const void* downedChar = nullptr;    // the character that went down (1.6.7: a new one after a load is not down)
     double noReviverSince = -1;
     bool   allowKill = false;
     double immuneUntil = 0;
@@ -394,6 +395,7 @@ void SetDowned(bool down) {
     if (s.localDowned == down) return;
     s.localDowned = down;
     s.downedAt = Now();
+    s.downedChar = down ? static_cast<const void*>(ue::LocalCharacter()) : nullptr;
     s.noReviverSince = -1;
     s.revivingMe = -1;
     if (auto slot = coop::LocalSlot()) s.downed[*slot] = down;
@@ -531,6 +533,14 @@ void TickRevive(double now) {
     if (!p) return;
 
     if (s.localDowned) {
+        // 1.6.7: quitting to the main menu while down kept the flag, and the next load's fresh character was killed
+        // at once ("nobody left to revive"; play test: a black screen after loading, "can't teleport while dead").
+        // A character other than the one that went down is a new life: it stands.
+        if (static_cast<const void*>(p) != s.downedChar) {
+            QD_INFO(kTag, "down state dropped: a new character (the world was left or reloaded while down)");
+            SetDowned(false);
+            return;
+        }
         if (p->IsDead) {   // the game killed us another way (a pit, a reload)
             SetDowned(false);
             return;

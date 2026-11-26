@@ -216,6 +216,7 @@ constexpr Entry kTable[] = {
     {"reject.protocol",        "Different co-op protocol. Both players need to update Knights' Domain.",
                                "联机协议版本不一致，请双方更新 MOD",
                                "通信プロトコルが違います。全員が Knights' Domain を更新してください。"},
+    {"coop.kick",              "Remove {} from the game",                           "将 {} 移出游戏",                                 "{} をゲームから外す"},
     {"reject.kicked",          "The host removed you from the room",                "你被房主移出了房间",
                                "ホストによってルームから外されました"},
     {"reject.unknown",         "unknown reason",                                    "未知原因",

@@ -786,6 +786,22 @@ void RunDevAutoActions() {
 
 }  // namespace
 
+// 1.6.7: the host removes a player (the X on their row of the co-op page). They get "The host removed you" and leave;
+// the others see them go at once, and the connection closes once the message had time to arrive.
+bool HostKick(uint8_t slot) {
+    auto& h = H();
+    if (!h.session || !IsHost() || slot >= net::kMaxPlayers || slot == h.localSlot) return false;
+    const Member m = h.members[slot];
+    if (!m.present || m.peer == net::kInvalidPeer) return false;
+    net::MsgReject r;
+    r.reason = net::RejectReason::Kicked;
+    SendBytes(m.peer, net::Channel::Reliable, net::Encode(r));
+    HostRemovePeer(m.peer);
+    h.pendingCloses.push_back({m.peer, kRejectCloseSec});
+    QD_INFO(kTag, "kicked slot {} \"{}\"", slot, m.name);
+    return true;
+}
+
 #if QD_DEV
 bool DevJoinUdp(const std::string& ip, uint16_t port) {
     auto& h = H();

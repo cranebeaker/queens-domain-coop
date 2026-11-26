@@ -29,6 +29,7 @@ int  PlayerCount();                          // members present including local,
 const std::array<Member, net::kMaxPlayers>& Members();
 std::optional<uint8_t> LocalSlot();
 std::optional<uint8_t> SlotOf(net::PeerId peer);
+bool HostKick(uint8_t slot);                 // host only: removes that player from the session (false: nothing to do)
 
 // Local display name for the active save slot (profiles.json), falls back to the Steam persona name.
 const std::string& LocalName();
