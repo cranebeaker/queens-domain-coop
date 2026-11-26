@@ -62,7 +62,6 @@ constexpr double kUploadCheckSec = 5.0;
 constexpr double kReplyTimeoutSec = 20.0;
 constexpr double kSaveEverySec = 120.0;      // the co-op character is written this often while playing
 constexpr double kTeleportStuckSec = 25.0;   // a teleport that has not ended by then is ended the game's own way
-constexpr double kDeathReloadSec = 180.0;   // died this recently before the world changed: a death reload
 constexpr int    kHostHistory = 5;           // older copies the host keeps of each character
 
 using Clock = std::chrono::steady_clock;
@@ -97,12 +96,6 @@ struct State {
     double placeAt = 0;
     std::string hostWhere;      // the host's last checkpoint
     bool gotWhere = false;
-    // 1.6.7: Continue after a death reloads the co-op character's own save, whose checkpoint is the one this player
-    // last rested at; a character that never rested came back at the map's new-game start, far from the party
-    // (play test). A death reload now travels to the host's checkpoint, as joining does.
-    double diedAt = -1e9;
-    SDK::UWorld* lastWorld = nullptr;
-    bool afterDeath = false;
     double nextSave = 0;
     bool wasInSession = false;
     double nextUploadCheck = 0;
@@ -629,10 +622,7 @@ void TickPlace(SDK::AFS_PlayerChar_C* p, double now) {
             return;
         case Place::Arrive:
             if (in < 1.5) return;
-            // joining: next to the host (it holds the player until the place has loaded). After a death the player
-            // stays at the checkpoint, as in the game alone (F5 > Teleport takes them to the host).
-            if (!s.afterDeath) SummonToHost();
-            s.afterDeath = false;
+            SummonToHost();   // next to the host (it holds the player until the place has loaded)
             next(Place::Done);
             return;
     }
@@ -686,21 +676,6 @@ void Tick(float) {
     }
     if (s.inGameSince < 0) s.inGameSince = now;
     auto* p = static_cast<SDK::AFS_PlayerChar_C*>(ch);
-    if (p->IsDead) s.diedAt = now;
-    SDK::UWorld* world = ue::World();
-    if (world != s.lastWorld) {
-        const bool deathReload = s.lastWorld != nullptr && now - s.diedAt < kDeathReloadSec;
-        s.lastWorld = world;
-        if (deathReload && (s.place == Place::Done || s.place == Place::None)) {
-            QD_INFO(kTag, "back after a death: going to the host's checkpoint");
-            s.diedAt = -1e9;
-            s.afterDeath = true;
-            s.gotWhere = false;
-            s.hostWhere.clear();
-            s.place = Place::Settle;
-            s.placeAt = 0;
-        }
-    }
     TickPlace(p, now);
     // regularly: the game's own save of the co-op character (then sent to the host by the upload check)
     if (now >= s.nextSave && s.place == Place::Done || (now >= s.nextSave && s.place == Place::None)) {
