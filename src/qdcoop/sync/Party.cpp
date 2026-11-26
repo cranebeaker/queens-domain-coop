@@ -219,6 +219,7 @@ State& S() {
     static State s;
     return s;
 }
+void NoteBigMoment();   // autosave, below
 
 bool IsFsPlayer(const SDK::UObject* o) {
     auto& s = S();
@@ -457,7 +458,20 @@ bool OnKillPre(hooks::CallInfo& ci) {
     SDK::AFS_PlayerChar_C* p = LocalPlayer();
     if (!p || ci.object != p) return false;
     if (s.localDowned) return true;           // already down: stay down
-    if (!s.downEnabled || !TeammateCanRevive()) return false;   // alone: the game's own death
+    if (!s.downEnabled || !TeammateCanRevive()) {   // alone: the game's own death
+        // 1.6.10: with every teammate down (or dead) that is a game over for the party, as "nobody left to revive" is:
+        // the world goes back to the host's save (before, pickups taken since the save stayed gone)
+        if (coop::InSession() && !TeammateCanRevive(true)) {
+            bool anyMate = false;
+            for (const auto& m : coop::Members())
+                if (m.present && !m.isLocal) anyMate = true;
+            if (anyMate) {
+                QD_INFO(kTag, "dead with every teammate down: game over for the party");
+                WorldSyncPartyWiped();
+            }
+        }
+        return false;
+    }
     GoDown(p);
     return true;
 }
@@ -1553,6 +1567,7 @@ void OnItemAdded(hooks::CallInfo& ci) {
         return;
     }
     LedgerAdd(path);
+    NoteBigMoment();
     net::MsgParty m;
     m.kind = net::PartyKind::Gift;
     m.toSlot = net::kPartyAll;
@@ -1592,6 +1607,7 @@ void ReceiveGift(const net::MsgParty& m) {
         if (GiveItem(it.path, count)) {
             QD_INFO(kTag, "got shared item {} x{} from {}", it.path, count, NameOf(m.fromSlot));
             ++got;
+            if (!topUp) NoteBigMoment();
             if (!many) ui::Toast(ui::TrF("party.gift", ShortItemName(it.path), NameOf(m.fromSlot)), ui::ToastKind::Info, 3.0f);
         } else {
             QD_WARN(kTag, "shared item {} x{} could not be added", it.path, count);
@@ -1667,6 +1683,50 @@ void OnMember(const coop::Member& m, bool joined) {
     if (!joined && s.reviveTarget == m.slot) s.reviveTarget = -1;
 }
 
+// ------------------------------------------------------------------ autosave (1.6.10)
+// A game over reloads the host's last save, while a friend's character file is saved every two minutes: play test,
+// the host lost a boss upgrade, loot sacks and the double dash the friend kept, and the pickups stayed gone from the
+// world. The host's game is now saved every two minutes and right after a big moment (an upgrade, key item, weapon
+// or loot sack is picked up or shared), as the host picks in F5 > Co-op (default: both).
+constexpr double kAutosaveEverySec = 120.0;
+constexpr double kMomentDelaySec   = 3.0;    // after the pickup's own animation
+double g_nextAutosave = 0, g_momentAt = -1;
+
+bool SafeToSave(SDK::AFS_PlayerChar_C* p) {
+    auto& s = S();
+    if (!p || p->IsDead || p->Teleporting || p->QuickTeleporting || p->Resting || GameBusy(p)) return false;
+    if (s.localDowned || s.rest.step != RestStep::Idle || g_pickupSince > 0) return false;
+    for (const auto& m : coop::Members())
+        if (m.present && s.downed[m.slot]) return false;
+    return true;
+}
+
+void NoteBigMoment() {
+    if (coop::IsHost() && config::Get().autosave != "off" && g_momentAt < 0) g_momentAt = Now() + kMomentDelaySec;
+}
+
+void TickAutosave(double now) {
+    if (!coop::InSession() || !coop::IsHost()) {
+        g_nextAutosave = now + kAutosaveEverySec;
+        g_momentAt = -1;
+        return;
+    }
+    const std::string& mode = config::Get().autosave;
+    if (mode == "off") return;
+    const bool moment = g_momentAt >= 0 && now >= g_momentAt;
+    const bool timer = mode == "both" && now >= g_nextAutosave;
+    if (!moment && !timer) return;
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    if (!SafeToSave(p)) return;   // tried again next tick
+    SDK::UObject* cdo = SaveFunctions();
+    if (!cdo) return;
+    SDK::Params::SaveFunctions_C_SaveGameToDisk sp{};
+    sp.__WorldContext = p;
+    if (Call(cdo, "SaveGameToDisk", sp)) QD_INFO(kTag, "autosave ({})", moment ? "big moment" : "every two minutes");
+    g_nextAutosave = now + kAutosaveEverySec;
+    g_momentAt = -1;
+}
+
 // ------------------------------------------------------------------ tick + UI
 
 void Tick(float) {
@@ -1678,6 +1738,7 @@ void Tick(float) {
     TickTradePrompt(now);
     TickWatchdogs(now);
     TickCatchUp(now);
+    TickAutosave(now);
     ui::SetInputCapture("trade", s.trade.stage == TradeStage::Open);
 
     if (now - s.invAt > 0.5) {
@@ -1896,6 +1957,32 @@ void DrawTradeHud() {
 }
 
 }  // namespace
+
+// 1.6.10, F5 > Fix: the host gets back every shared item the party agreed on and it lacks (a game over or a death
+// reload took it), also kinds the join catch-up leaves alone (loot sacks, upgrades, key items).
+void PartyRestoreItems() {
+    gamethread::Post([] {
+        if (!coop::InSession() || !coop::IsHost() || !LedgerReady()) {
+            ui::Toast(ui::Tr("fix.restore_none"), ui::ToastKind::Info, 4.0f);
+            return;
+        }
+        int got = 0;
+        for (const auto& [path, n] : g_ledger) {
+            SDK::UObject* obj = ue::LoadObject(path);
+            if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
+            auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
+            if (!Shared(item, path)) continue;
+            const int have = CountOf(path);
+            const int give = OneOfAKind(item) ? (have > 0 ? 0 : 1) : n - have;
+            if (give > 0 && GiveItem(path, give)) {
+                QD_INFO(kTag, "restore: {} x{} (+{})", path, n, give);
+                ++got;
+            }
+        }
+        if (got) NoteBigMoment();
+        ui::Toast(got ? ui::TrF("fix.restore_done", got) : ui::Tr("fix.restore_none"), ui::ToastKind::Success, 5.0f);
+    });
+}
 
 void PartyUnstuck() {
     gamethread::Post([] {

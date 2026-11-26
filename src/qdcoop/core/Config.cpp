@@ -42,6 +42,7 @@ nlohmann::json ToJson(const Config& c) {
     j["hp_scale"] = {{"normal", c.hpScale.normal}, {"elite", c.hpScale.elite}, {"boss", c.hpScale.boss}};
     j["damage_scale"] = c.damageScale;
     j["difficulty"] = c.difficulty;
+    j["autosave"] = c.autosave;
     return j;
 }
 
@@ -104,6 +105,7 @@ void FromJson(const nlohmann::json& j, Config& c, bool& missing, bool& typeError
         ReadKey(*hp, "boss", c.hpScale.boss, missing, typeError);
     }
     ReadKey(j, "damage_scale", c.damageScale, missing, typeError);
+    if (j.contains("autosave")) ReadKey(j, "autosave", c.autosave, missing, typeError);
     if (j.contains("difficulty")) {
         ReadKey(j, "difficulty", c.difficulty, missing, typeError);
     } else {
@@ -135,6 +137,7 @@ void Sanitize(Config& c) {
     c.profile = 1;
 #endif
     if (!IsKnownLanguage(c.language)) c.language = "en";
+    if (c.autosave != "both" && c.autosave != "moments" && c.autosave != "off") c.autosave = "both";
     if (c.difficulty != "normal" && c.difficulty != "hard" && c.difficulty != "custom") {
         QD_WARN(kTag, "unknown difficulty '{}', using 'normal'", c.difficulty);
         c.difficulty = "normal";
@@ -278,6 +281,21 @@ bool SetDifficulty(const std::string& difficulty, const HpScale& customHp, float
         return false;
     }
     QD_INFO(kTag, "difficulty '{}' saved to config.json", difficulty);
+    return true;
+}
+
+bool SetAutosave(const std::string& mode) {
+    for (Config* c : {&g_config, &g_file}) {
+        c->autosave = mode;
+        Sanitize(*c);
+    }
+    if (paths::ModDir().empty() || !g_fileUsable) return false;
+    if (!WriteFileAtomic(ConfigPath(), ToJson(g_file).dump(2) + "
+")) {
+        QD_WARN(kTag, "could not write autosave '{}' to config.json", mode);
+        return false;
+    }
+    QD_INFO(kTag, "autosave '{}' saved to config.json", mode);
     return true;
 }
 

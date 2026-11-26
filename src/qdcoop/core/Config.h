@@ -29,6 +29,7 @@ struct Config {
     HpScale     hpScale;                 // custom difficulty: health added per extra player
     float       damageScale = 0.25f;     // custom difficulty: enemy damage added per extra player
     std::string difficulty = "normal";   // "normal" | "hard" | "custom" (host's choice)
+    std::string autosave = "both";       // 1.6.10, host: "both" (every 2 min + big moments) | "moments" | "off"
 };
 
 // Load order: <ModDir>/config.json, then (dev flavour only) command-line overrides:
@@ -43,6 +44,8 @@ bool Save();
 bool SetLanguage(const std::string& lang);
 // sets the difficulty (and, for "custom", its values) in memory and persists those keys only. Game thread.
 bool SetDifficulty(const std::string& difficulty, const HpScale& customHp, float customDamage);
+// sets the host's autosave choice and persists that key only. Game thread.
+bool SetAutosave(const std::string& mode);
 // the difficulty in effect (preset values, or the custom ones)
 Scaling CurrentScaling();
 

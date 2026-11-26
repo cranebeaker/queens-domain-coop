@@ -379,6 +379,8 @@ float g_customHp = -1, g_customDamage = -1;   // custom sliders, in % per extra 
 
 int Pct(float mult) { return static_cast<int>(std::lround((mult - 1.0f) * 100.0f)); }
 
+void DrawAutosave();   // below
+
 void DrawDifficulty() {
     ImGui::Spacing();
     ImGui::Separator();
@@ -470,6 +472,7 @@ void DrawCoopTab() {
     DrawFriendLobbies(s);
     DrawMembers(s);
     DrawDifficulty();
+    DrawAutosave();
 }
 
 // ---- My Name
@@ -670,12 +673,35 @@ void DrawLobbyWindow() {
         }
         Heading(Tr("diff.title"));
         DrawDifficulty();
+        DrawAutosave();
         ImGui::Spacing();
         DrawLanguageSwitch();
         ImGui::TextDisabled("%s %s, %s", core::kModName, core::kModVersion, Tr("about.disclaimer"));
     }
     ImGui::End();
     StyledEnd();
+}
+
+// ---- Autosave (1.6.10, host's choice): every two minutes and after big moments, big moments only, or off
+void DrawAutosave() {
+    ImGui::Spacing();
+    ImGui::TextUnformatted(Tr("autosave.title"));
+    const bool host = sync::GetDifficultyInfo().isHost;
+    const std::string cur = config::Get().autosave;
+    auto pick = [](const char* mode) {
+        const std::string m = mode;
+        gamethread::Post([m] { config::SetAutosave(m); });
+    };
+    ImGui::BeginDisabled(!host);
+    if (ImGui::RadioButton(Tr("autosave.both"), cur == "both") && cur != "both") pick("both");
+    ImGui::SameLine();
+    if (ImGui::RadioButton(Tr("autosave.moments"), cur == "moments") && cur != "moments") pick("moments");
+    ImGui::SameLine();
+    if (ImGui::RadioButton(Tr("autosave.off"), cur == "off") && cur != "off") pick("off");
+    ImGui::EndDisabled();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", Tr(host ? "autosave.help" : "autosave.host_only"));
+    ImGui::PopTextWrapPos();
 }
 
 // ---- F5 > Fix: ways out of a stuck game
@@ -699,6 +725,9 @@ void DrawFixTab() {
     }
     ImGui::EndDisabled();
     if (ImGui::Button(Tr("fix.unstuck"), ImVec2(320, 0))) sync::PartyUnstuck();
+    ImGui::BeginDisabled(!(s.inSession && s.isHost));
+    if (ImGui::Button(Tr("fix.restore"), ImVec2(320, 0))) sync::PartyRestoreItems();
+    ImGui::EndDisabled();
     ImGui::BeginDisabled(!s.inSession);
     if (ImGui::Button(Tr("fix.stand_up"), ImVec2(320, 0))) sync::PartyForceStandUp();
     if (ImGui::Button(Tr("coop.leave"), ImVec2(320, 0))) {
