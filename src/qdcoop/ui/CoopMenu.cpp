@@ -702,6 +702,10 @@ void DrawAutosave() {
     ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("%s", Tr(host ? "autosave.help" : "autosave.host_only"));
     ImGui::PopTextWrapPos();
+    if (ImGui::Button(Tr("save.now"), ImVec2(320, 0))) sync::PartySaveNow();
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextDisabled("%s", Tr("save.now_help"));
+    ImGui::PopTextWrapPos();
 }
 
 // ---- F5 > Fix: ways out of a stuck game

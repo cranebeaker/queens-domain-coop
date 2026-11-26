@@ -1687,7 +1687,12 @@ void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
             StartRest(m);
             return;
         case net::PartyKind::Saved:
-            if (m.fromSlot == 0) CharacterHostSaved();
+            if (m.arg == 1) {   // a friend pressed Save now
+                if (coop::IsHost()) HostSaveNow(m.fromSlot);
+            } else if (m.fromSlot == 0) {
+                if (m.arg == 0) CharacterHostSaved();
+                else ui::Toast(ui::Tr(m.arg == 2 ? "save.done" : "save.not_now"), m.arg == 2 ? ui::ToastKind::Success : ui::ToastKind::Warning, 4.0f);
+            }
             return;
         default:
             OnTradeMsg(m);
@@ -1750,6 +1755,26 @@ void TickAutosave(double now) {
     if (Call(cdo, "SaveGameToDisk", sp)) QD_INFO(kTag, "autosave ({})", moment ? "big moment" : "every two minutes");
     g_nextAutosave = now + kAutosaveEverySec;
     g_momentAt = -1;
+}
+
+// 1.6.12, F5 > Co-op > Save now: the host's game is saved where everyone is (a friend's press asks the host). The
+// game brings a player back at their last checkpoint, so this keeps progress, not the place.
+void HostSaveNow(uint8_t askedBy) {
+    if (!coop::InSession() || !coop::IsHost()) return;
+    SDK::AFS_PlayerChar_C* p = LocalPlayer();
+    const bool ok = SafeToSave(p);
+    if (ok) {
+        SDK::UObject* cdo = SaveFunctions();
+        SDK::Params::SaveFunctions_C_SaveGameToDisk sp{};
+        sp.__WorldContext = p;
+        if (cdo && Call(cdo, "SaveGameToDisk", sp)) {
+            QD_INFO(kTag, "saved now (asked by slot {})", askedBy);
+            g_nextAutosave = Now() + kAutosaveEverySec;
+        }
+    }
+    const char* key = ok ? "save.done" : "save.not_now";
+    if (askedBy == 0) ui::Toast(ui::Tr(key), ok ? ui::ToastKind::Success : ui::ToastKind::Warning, 4.0f);
+    else SendTo(askedBy, net::PartyKind::Saved, 0, ok ? 2 : 3);
 }
 
 // ------------------------------------------------------------------ tick + UI
@@ -2006,6 +2031,14 @@ void PartyRestoreItems() {
         }
         if (got) NoteBigMoment();
         ui::Toast(got ? ui::TrF("fix.restore_done", got) : ui::Tr("fix.restore_none"), ui::ToastKind::Success, 5.0f);
+    });
+}
+
+void PartySaveNow() {
+    gamethread::Post([] {
+        if (!coop::InSession()) return;
+        if (coop::IsHost()) HostSaveNow(0);
+        else SendTo(0, net::PartyKind::Saved, 0, 1);
     });
 }
 

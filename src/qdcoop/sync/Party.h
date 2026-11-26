@@ -16,7 +16,8 @@ void PartyHostNewGame(int slot);
 void PartyForceStandUp();
 // The player cannot move or look (a teleport or a cutscene that never ended): end it the game's own way. Thread-safe.
 void PartyUnstuck();
-void PartyRestoreItems();   // host, F5 > Fix: shared items the party agreed on that this save lost
+void PartyRestoreItems();
+void PartySaveNow();        // F5 > Co-op: save the host's game now (a friend asks the host)   // host, F5 > Fix: shared items the party agreed on that this save lost
 // True while the local player is in the game's pick-up animation of `pickup` (an ItemPickup actor): it must not be
 // destroyed then, or the game never gives the controls back.
 bool PartyPickingUp(const SDK::UObject* pickup);
