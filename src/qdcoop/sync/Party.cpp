@@ -1465,12 +1465,16 @@ void LedgerAdd(const std::string& path, int n = -1) {
     LedgerSave();
 }
 
-// A stack shown in the key menu (door keys and the like) is used up in the world: it is never topped up. Gear kept
-// in the key menu (the knife belt, the scientist's weapon upgrades) is always shared.
+// What the catch-up (and Get back lost party items) may bring a player up to: gear, which nobody loses in normal play.
+// 1.6.17: treasure is sold and key items are used up or handed over, and the agreed amounts only ever grow, so every
+// join gave back what had been sold (play test: ten loot sacks, ratty bugs and a necklace sold again). Only weapons,
+// equipment and upgrades are topped up, plus the gear kept in the key menu (knife belt, the scientist's weapon upgrades).
 bool TopUpAllowed(const SDK::UFS_ItemData_C* item) {
-    if (!(item->ShowInKeyMenu && !item->Unstackable)) return true;
     const std::string path = ue::PathName(item);
-    return path.find("KnifeBelt") != std::string::npos || path.find("WeaponUpgradeUnlock") != std::string::npos;
+    if (path.find("KnifeBelt") != std::string::npos || path.find("WeaponUpgradeUnlock") != std::string::npos) return true;
+    if (path.find("/Items/Treasure/") != std::string::npos) return false;
+    if (item->ShowInKeyMenu) return false;
+    return item->Weapon || item->Equippable || path.find("/Items/Upgrades/") != std::string::npos;
 }
 
 // Host: its own inventory up to the agreed amounts.
@@ -2030,7 +2034,7 @@ void PartyRestoreItems() {
             SDK::UObject* obj = ue::LoadObject(path);
             if (!obj || !obj->IsA(SDK::UFS_ItemData_C::StaticClass())) continue;
             auto* item = static_cast<SDK::UFS_ItemData_C*>(obj);
-            if (!Shared(item, path)) continue;
+            if (!Shared(item, path) || !TopUpAllowed(item)) continue;   // 1.6.17: no sold treasure back
             const int have = CountOf(path);
             const int give = OneOfAKind(item) ? (have > 0 ? 0 : 1) : n - have;
             if (give > 0 && GiveItem(path, give)) {
