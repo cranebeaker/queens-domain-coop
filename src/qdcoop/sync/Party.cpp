@@ -52,6 +52,7 @@
 #include "qdcoop/sync/GameQueries.h"
 #include "qdcoop/sync/BossSync.h"
 #include "qdcoop/sync/WorldSync.h"
+#include "qdcoop/sync/CoopCharacter.h"
 #include "qdcoop/ui/I18n.h"
 #include "qdcoop/ui/Overlay.h"
 
