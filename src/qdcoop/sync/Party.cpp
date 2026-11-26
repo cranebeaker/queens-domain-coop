@@ -111,7 +111,8 @@ constexpr float  kReviveZRangeCm    = 200.0f;
 constexpr double kReviveSec         = 3.0;
 constexpr float  kReviveFraction    = 0.35f;
 constexpr double kReviveImmuneSec   = 2.0;    // no damage right after standing up
-constexpr double kBleedOutGraceSec  = 4.0;    // nobody could revive us this long -> the game's own death
+constexpr double kBleedOutGraceSec  = 4.0;
+constexpr double kGiveUpSec         = 3.0;    // a downed player holds Interact this long to give up    // nobody could revive us this long -> the game's own death
 constexpr float  kTradeRangeCm      = 750.0f;
 constexpr float  kTradeBreakCm      = 1000.0f;
 constexpr float  kRestNearCm        = 1500.0f; // a follower this close to the checkpoint walks over instead of travelling
@@ -195,6 +196,11 @@ struct State {
     float  reviveHpAtStart = 0;
     float  reviveProgress = 0;           // 0..1, for the name plate
     int    reviveCandidate = -1;         // nearest downed teammate in reach (name plate prompt)
+    // 1.6.9: a downed player can give up (hold Interact) instead of waiting for a teammate to come over: they stay
+    // down until a teammate rests or saves at a checkpoint, which stands them up there (StartRest)
+    bool   givenUp = false;
+    double giveUpHoldSince = -1;
+    float  giveUpProgress = 0;
 
     // rest
     uint32_t restSeq = 0;
@@ -379,13 +385,13 @@ bool TakeItem(const std::string& path, int count) {
 
 // ------------------------------------------------------------------ revive
 
-bool TeammateCanRevive() {
+bool TeammateCanRevive(bool anyArea = false) {
     auto local = coop::LocalSlot();
     if (!local || !coop::InSession()) return false;
     for (const auto& m : coop::Members()) {
         if (!m.present || m.isLocal || m.slot == *local || S().downed[m.slot]) continue;
         bool dead = false, sameArea = false;
-        if (RemotePlayerInfo(m.slot, dead, sameArea) && !dead && sameArea) return true;
+        if (RemotePlayerInfo(m.slot, dead, sameArea) && !dead && (sameArea || anyArea)) return true;
     }
     return false;
 }
@@ -398,6 +404,9 @@ void SetDowned(bool down) {
     s.downedChar = down ? static_cast<const void*>(ue::LocalCharacter()) : nullptr;
     s.noReviverSince = -1;
     s.revivingMe = -1;
+    s.givenUp = false;
+    s.giveUpHoldSince = -1;
+    s.giveUpProgress = 0;
     if (auto slot = coop::LocalSlot()) s.downed[*slot] = down;
     net::MsgParty m;
     m.kind = net::PartyKind::Downed;
@@ -545,7 +554,31 @@ void TickRevive(double now) {
             SetDowned(false);
             return;
         }
-        if (TeammateCanRevive()) s.noReviverSince = -1;
+        // give up: hold Interact (only while nobody is reviving us)
+        if (!s.givenUp) {
+            if (s.revivingMe < 0 && !GameBusy(p) && InteractHeld(p)) {
+                if (s.giveUpHoldSince < 0) s.giveUpHoldSince = now;
+                s.giveUpProgress = static_cast<float>(std::clamp((now - s.giveUpHoldSince) / kGiveUpSec, 0.0, 1.0));
+                if (s.giveUpProgress >= 1.0f) {
+                    s.givenUp = true;
+                    s.giveUpHoldSince = -1;
+                    s.giveUpProgress = 0;
+                    QD_INFO(kTag, "gave up: down until a teammate rests or saves at a checkpoint");
+                    ui::Toast(ui::Tr("party.gave_up"), ui::ToastKind::Info, 8.0f);
+                    net::MsgParty g;
+                    g.kind = net::PartyKind::Downed;
+                    g.arg = 2;   // still down, gave up
+                    g.pos = V(p->K2_GetActorLocation());
+                    Send(std::move(g));
+                }
+            } else {
+                s.giveUpHoldSince = -1;
+                s.giveUpProgress = 0;
+            }
+        }
+        // given up: the teammate is on the way to a checkpoint, maybe in another area; only a party with nobody
+        // standing is over
+        if (TeammateCanRevive(s.givenUp)) s.noReviverSince = -1;
         else if (s.noReviverSince < 0) s.noReviverSince = now;
         else if (now - s.noReviverSince > kBleedOutGraceSec) DieForReal("nobody left to revive");
         return;
@@ -989,8 +1022,11 @@ void BuildPrompt(UiSnap& snap, double now) {
         if (s.revivingMe >= 0) {
             snap.prompt = ui::TrF("party.hud_being_revived", UiNameOf(static_cast<uint8_t>(s.revivingMe)));
             snap.progress = static_cast<float>(std::clamp((now - g_revivingSince) / kReviveSec, 0.0, 1.0));
+        } else if (s.givenUp) {
+            snap.prompt = ui::Tr("party.hud_gave_up");
         } else {
             snap.prompt = ui::Tr("party.hud_down");
+            if (s.giveUpProgress > 0) snap.progress = s.giveUpProgress;
         }
         return;
     }
@@ -1590,8 +1626,9 @@ void OnParty(uint8_t dispatchSlot, const uint8_t* data, size_t size) {
     auto& s = S();
     switch (m.kind) {
         case net::PartyKind::Downed:
-            s.downed[m.fromSlot] = m.arg == 1;
+            s.downed[m.fromSlot] = m.arg != 0;
             if (m.arg == 1) ui::Toast(ui::TrF("party.mate_down", NameOf(m.fromSlot)), ui::ToastKind::Warning, 5.0f);
+            if (m.arg == 2) ui::Toast(ui::TrF("party.mate_gave_up", NameOf(m.fromSlot)), ui::ToastKind::Warning, 8.0f);
             if (m.arg == 0 && s.reviveTarget == m.fromSlot) StopReviving();
             return;
         case net::PartyKind::Reviving:
