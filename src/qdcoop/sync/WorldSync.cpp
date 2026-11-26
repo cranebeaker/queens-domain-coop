@@ -92,6 +92,12 @@ struct State {
     // game over: the whole party went down. The next reload is the host's save for everyone, not the shared world.
     bool   wiped = false;
     double wipedAt = 0;
+    // 1.6.7 (client): the host's world replaces this machine's on a join or after a game over. What the local save
+    // holds beyond it then is this player's old progress, not something just done: it is kept here, never sent
+    // (play test: a friend's character file still had a Star Lizard killed before a game over, sent it on every
+    // join, and the lizard never came back to the host's world).
+    double fullAt = -1e9;
+    double adoptUntil = 0;
     std::unordered_map<const void*, double> replayed;   // objects a received event ran on, and when
 };
 State& S() {
@@ -564,7 +570,9 @@ bool SyncSessionFlag();
 
 constexpr const char* kRequestMarker = "q!";   // a client asks for the whole world again
 constexpr const char* kResetMarker = "r!";   // first entry of a full state: replace, do not merge
-constexpr double kWipeWaitSec = 40.0;          // a client waits this long for the host's save after a game over
+constexpr double kWipeWaitSec = 40.0;
+constexpr double kAdoptSec = 6.0;               // see adoptUntil
+constexpr double kAdoptAfterReloadSec = 90.0;          // a client waits this long for the host's save after a game over
 
 void OnWorldFlags(uint8_t fromSlot, const uint8_t* data, size_t size) {
     auto& s = S();
@@ -581,7 +589,11 @@ void OnWorldFlags(uint8_t fromSlot, const uint8_t* data, size_t size) {
         QD_INFO(kTag, "slot {} asked for the whole world: sent {} entries", fromSlot, all.size());
         return;
     }
-    if (m.full && !host) s.haveFull = true;
+    if (m.full && !host) {
+        s.haveFull = true;
+        s.fullAt = NowSec();
+        s.adoptUntil = NowSec() + kAdoptSec;
+    }
     SDK::UFS_SaveSlot_C* save = ActiveSave();
     if (save) RebuildIndex();
     int applied = 0;
@@ -659,6 +671,8 @@ void Tick(float dt) {
     SDK::UWorld* world = ue::World();
     const bool reloaded = save != s.lastSave || world != s.lastWorld;
     if (reloaded) s.quietUntil = NowSec() + 5.0;
+    // a client's reload soon after the host's world arrived (a game over) brings back its own file: adopt again
+    if (reloaded && !host && NowSec() - s.fullAt < kAdoptAfterReloadSec) s.adoptUntil = NowSec() + kAdoptSec;
     const bool reindexed = s.indexIn <= 0 || reloaded;
     if (reindexed) {
         s.indexIn = kIndexSec;
@@ -720,6 +734,11 @@ void Tick(float dt) {
             }
     s.dropsSeen = cur.drops;
     if (changed.empty()) return;
+    if (!host && NowSec() < s.adoptUntil) {
+        for (auto& f : changed) Remember(s.known, f.name, f.value);
+        QD_INFO(kTag, "kept {} entries of this player's own save out of the host's world (joined or game over)", changed.size());
+        return;
+    }
     // An entry that differs from `known` right after a reload is the reload, not a player's action: known wins and
     // Reassert has just rewritten it. What still differs now is local progress.
     for (auto& f : changed) Remember(s.known, f.name, f.value);

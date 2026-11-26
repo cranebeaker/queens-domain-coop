@@ -21,7 +21,7 @@ void OnReady(std::function<void()> handler);
 
 // The build fingerprint sent in Hello: "<exe size>-<exe PE TimeDateStamp hex>".
 const std::string& GameBuild();
-constexpr const char* kModVersion = "1.6.7";
+constexpr const char* kModVersion = "1.6.8";
 // hard-coded identity. Shown in the F5 About page and checked in the network handshake (MsgHello) and the Steam
 // lobby data (kd_mod / kd_author); a peer with a different name or author is rejected as RejectReason::ModVersion.
 constexpr const char* kModName = "Knights' Domain";
