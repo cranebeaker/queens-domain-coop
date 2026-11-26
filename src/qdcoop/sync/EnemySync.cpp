@@ -1548,21 +1548,32 @@ void HostEvaluateOwners(double now) {
         // steps (tests: a Whaleking run by the client took no damage even when awake). The host's is intact. It
         // still fights whoever attacks it: see ChooseBossTarget. Only when the host's own player is dead or far
         // outside the enemy's spawner range (its game would remove the enemy) do the ordinary rules apply.
+        // 1.6.16: every enemy near the host is run by the host, like bosses and dormant enemies before. Moving an
+        // enemy to another machine to change whom it fights (nearest, balance, hits, a downed owner) lost enemies on
+        // the way (play test: the host went down, a Mossy Golem moved to the friend, a game over followed and the
+        // golem never came back). The host's copy fights whoever it should through ChooseBossTarget (threat: the
+        // hitter takes it, a downed or dead player loses it), so it changes target, not machine. An enemy only
+        // changes machine when the host's player is far from it (its game would not run it) or dead for real.
         {
             bool special = IsBossLike(e, en);
             if (Valid(e.spawner))
                 special = special || static_cast<int>(static_cast<SDK::AEnemySpawner_C*>(e.spawner)->BehaviourMode) != 0;
-            // "There" = within the boss range. Farther away the host's game barely updates the enemy (test: a
-            // Whaleking 100 m from the host woke up but did not attack), so a player fighting it alone runs it.
+            // "There" = near enough for the host's game to run it: the boss range for bosses and dormant enemies
+            // (farther away the host's game barely updates them: a Whaleking 100 m from the host woke up but did not
+            // attack), the sync range for the rest; a quarter more while it already runs there, so it does not go
+            // back and forth at the edge. Down counts as there; dead for real does not.
+            const bool hostUp = CandAlive(0) || PartyLocalDowned();
+            const float range = (special ? kBossLockRange : kRelevantRange) * (e.hostRun ? 1.25f : 1.0f);
             bool hostThere = false;
-            for (const Cand& k : s.cands)
-                if (k.slot == 0 && k.alive && Dist(pos, k.pos) <= kBossLockRange) hostThere = true;
+            if (hostUp)
+                for (const Cand& k : s.cands)
+                    if (k.slot == 0 && Dist(pos, k.pos) <= range) hostThere = true;
             // Lane B3: the host's own entry drops out of the list for a moment while its player is moved (a
             // teleport, `kd egoto`). Without a grace period a client's hit took the boss in that gap and the host took
             // it back a moment later, eight times in one fight (Cocker), until the host's copy stood frozen.
             if (hostThere) e.hostThereAt = now;
-            else if (special && now - e.hostThereAt < kHostThereGraceSec && CandAlive(0)) hostThere = true;   // not while the host is down
-            e.hostRun = special && hostThere;
+            else if (hostUp && now - e.hostThereAt < kHostThereGraceSec) hostThere = true;
+            e.hostRun = hostThere;
             if (e.hostRun) {
                 e.bossLockSlot = 0xFF;
                 if (cur != 0) changes.push_back({id, 0, "房主专管", true});
