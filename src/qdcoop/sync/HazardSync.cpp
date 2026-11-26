@@ -25,6 +25,8 @@
 #include "qdcoop/sync/Coop.h"
 #include "qdcoop/sync/EnemySync.h"
 
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -38,6 +40,29 @@ namespace {
 
 constexpr const char* kTag = "hazard";
 constexpr uint8_t kOwnerIsEnemy = 1, kInstigatorIsEnemy = 2, kIsDrop = 4, kIsAdd = 8;
+// 1.6.14: guid[0..2] carry the projectile's velocity (float bits)
+constexpr uint8_t kIsFired = 16;       // a held attack actor sent when it is thrown (a golem's rock): fired on arrival
+constexpr uint8_t kIsPlayerShot = 32;  // a player's projectile (thrown knives, axes, shots): a copy that only shows
+constexpr double  kShotMaxSec = 3.0;   // a player's shot copy lives at most this long (until what it would hit)
+constexpr const char* kGolemRockFire = "/Game/Enemies/Golem/Golem_Rock_Projectile.Golem_Rock_Projectile_C:Fire";
+
+SDK::UProjectileMovementComponent* ProjectileOf(SDK::AActor* a) {
+    if (!a) return nullptr;
+    SDK::UActorComponent* c = a->GetComponentByClass(SDK::UProjectileMovementComponent::StaticClass());
+    return c && ue::IsValid(c) ? static_cast<SDK::UProjectileMovementComponent*>(c) : nullptr;
+}
+void PutVelocity(std::array<uint32_t, 4>& g, const SDK::FVector& v) {
+    std::memcpy(&g[0], &v.X, 4);
+    std::memcpy(&g[1], &v.Y, 4);
+    std::memcpy(&g[2], &v.Z, 4);
+}
+SDK::FVector GetVelocity(const std::array<uint32_t, 4>& g) {
+    SDK::FVector v{};
+    std::memcpy(&v.X, &g[0], 4);
+    std::memcpy(&v.Y, &g[1], 4);
+    std::memcpy(&v.Z, &g[2], 4);
+    return v;
+}
 constexpr const char* kTrySpawningItem = "/Game/Blueprints/ItemSystem/SpawnItemDrop.SpawnItemDrop_C:TrySpawningItem";
 constexpr const char* kPickupClass = "/Game/Blueprints/CoreItemPickupActor.CoreItemPickupActor_C";
 // Reward and dialogue NPCs a boss spawns for the player who talks to its body (Shrineboss / Necronomicon / Whaleking
@@ -251,6 +276,27 @@ void OnSpawned(SDK::UObject* caller, SDK::UFunction*, void* result) {
     if (s.pickupCls && actor->IsA(s.pickupCls)) return;   // loot: matched to its roll by ScanDrops
     if (!ue::IsValid(s.npcCls)) s.npcCls = ue::FindClass(kNpcClass);
     if (s.npcCls && actor->IsA(s.npcCls)) return;   // a reward / dialogue NPC: every player has their own
+    // 1.6.14: a projectile the local player threw or shot (knives, axes, guns): the others see a copy fly
+    if (SDK::ACharacter* me = ue::LocalCharacter();
+        me && (static_cast<SDK::AActor*>(actor->Instigator) == me || actor->Owner == me) && !actor->IsA(SDK::APawn::StaticClass())) {
+        SDK::UProjectileMovementComponent* pm = ProjectileOf(actor);
+        const auto slot = coop::LocalSlot();
+        if (!pm || !slot) return;
+        net::MsgHazard m;
+        m.ownerSlot = *slot;
+        m.flags = kIsPlayerShot;
+        m.classPath = ue::PathName(actor->Class);
+        if (m.classPath.empty() || m.classPath.size() > net::kMaxClassPathBytes) return;
+        const SDK::FVector loc = actor->K2_GetActorLocation();
+        const SDK::FRotator rot = actor->K2_GetActorRotation();
+        const SDK::FVector sc = actor->GetActorScale3D();
+        m.pos = {loc.X, loc.Y, loc.Z};
+        m.rot = {rot.Pitch, rot.Yaw, rot.Roll};
+        m.scale = {sc.X, sc.Y, sc.Z};
+        PutVelocity(m.guid, pm->Velocity);
+        s.outbox.push_back(std::move(m));
+        return;
+    }
     uint64_t id = EnemyOfCaller(caller);
     // spawned from an anim notify or a component's script: the caller is not the enemy, the new actor's
     // Instigator / Owner usually is
@@ -367,8 +413,54 @@ void ScanDrops(double now) {
     }
 }
 
+// 1.6.14: a teammate's projectile: the same actor, flying the same way, with no collision (its hits count on the
+// thrower's machine only) and gone where it would have hit something.
+void SpawnPlayerShot(const net::MsgHazard& m) {
+    auto& s = S();
+    SDK::UWorld* w = ue::World();
+    SDK::ACharacter* me = ue::LocalCharacter();
+    SDK::UClass* cls = ue::FindClass(m.classPath);
+    if (!w || !me || !cls || !cls->IsSubclassOf(SDK::AActor::StaticClass()) || cls->IsSubclassOf(SDK::APawn::StaticClass())) return;
+    const SDK::FVector vel = GetVelocity(m.guid);
+    for (float v : {m.pos.x, m.pos.y, m.pos.z, m.rot.x, m.rot.y, m.rot.z, m.scale.x, m.scale.y, m.scale.z, vel.X, vel.Y, vel.Z})
+        if (!std::isfinite(v)) return;
+    const SDK::FVector p = me->K2_GetActorLocation();
+    const float dx = m.pos.x - p.X, dy = m.pos.y - p.Y, dz = m.pos.z - p.Z;
+    if (dx * dx + dy * dy + dz * dz > 10000.f * 10000.f) return;   // far away: nothing to show
+    SDK::FTransform t{};
+    t.Rotation = SDK::UKismetMathLibrary::Conv_RotatorToTransform(SDK::FRotator(m.rot.x, m.rot.y, m.rot.z)).Rotation;
+    t.Translation = SDK::FVector(m.pos.x, m.pos.y, m.pos.z);
+    t.Scale3D = SDK::FVector(m.scale.x, m.scale.y, m.scale.z);
+    s.spawningRemote = true;
+    SDK::AActor* a = SDK::UGameplayStatics::BeginDeferredActorSpawnFromClass(w, cls, t, SDK::ESpawnActorCollisionHandlingMethod::AlwaysSpawn, nullptr);
+    if (a) {
+        a->SetActorEnableCollision(false);
+        SDK::UGameplayStatics::FinishSpawningActor(a, t);
+        a->SetActorEnableCollision(false);
+        if (SDK::UProjectileMovementComponent* pm = ProjectileOf(a)) pm->Velocity = vel;
+        // gone where it would hit: a trace along its flight
+        const float speed = std::sqrt(vel.X * vel.X + vel.Y * vel.Y + vel.Z * vel.Z);
+        float life = static_cast<float>(kShotMaxSec);
+        if (speed > 1.0f) {
+            const float reach = speed * life;
+            const SDK::FVector end(m.pos.x + vel.X / speed * reach, m.pos.y + vel.Y / speed * reach, m.pos.z + vel.Z / speed * reach);
+            SDK::FHitResult hit{};
+            SDK::TArray<SDK::AActor*> ignore;
+            if (SDK::UKismetSystemLibrary::LineTraceSingle(me, t.Translation, end, SDK::ETraceTypeQuery::TraceTypeQuery1, false, ignore,
+                                                           SDK::EDrawDebugTrace::None, &hit, true, SDK::FLinearColor(),
+                                                           SDK::FLinearColor(), 0.0f) &&
+                hit.bBlockingHit)
+                life = std::clamp(hit.Distance / speed, 0.05f, life);
+        }
+        a->SetLifeSpan(life);
+        ++s.spawned;
+    }
+    s.spawningRemote = false;
+}
+
 void SpawnRemote(const net::MsgHazard& m) {
     auto& s = S();
+    if (m.flags & kIsPlayerShot) return SpawnPlayerShot(m);
     SDK::UWorld* w = ue::World();
     SDK::UClass* cls = ue::FindClass(m.classPath);
     SDK::AActor* enemy = EnemyActorOfId(m.enemyId);
@@ -426,6 +518,13 @@ void SpawnRemote(const net::MsgHazard& m) {
         if (drop) setGuid();
         if (add) EnemySyncAlias(a, static_cast<uint64_t>(m.guid[0]) | (static_cast<uint64_t>(m.guid[1]) << 32));
         SDK::UGameplayStatics::FinishSpawningActor(a, t);
+        if (m.flags & kIsFired) {   // thrown on the owner's machine: on its way here too
+            if (SDK::UProjectileMovementComponent* pm = ProjectileOf(a)) pm->Velocity = GetVelocity(m.guid);
+            if (SDK::UFunction* fn = ue::FindFunction(a, "Fire")) {
+                alignas(16) uint8_t parms[16] = {};
+                ue::CallFunction(a, fn, parms);
+            }
+        }
         if (drop && !setGuid()) QD_WARN(kTag, "drop {} spawned without a GUID slot", m.classPath);
         if (drop) {
             // the owner's TrySpawningItem wrote its ItemDrops entry; ours was skipped, so the pickup writes it now
@@ -452,7 +551,7 @@ void OnHazard(uint8_t fromSlot, const uint8_t* data, size_t size) {
     } else if (fromSlot != 0) {
         return;
     }
-    if (!(m.flags & kIsDrop) && EnemyOwnedHere(m.enemyId)) return;   // ownership moved to us: our copy spawns its own
+    if (!(m.flags & (kIsDrop | kIsPlayerShot)) && EnemyOwnedHere(m.enemyId)) return;   // ownership moved to us: our copy spawns its own
     S().inbox.push_back(std::move(m));
 }
 
@@ -521,6 +620,35 @@ void HazardSyncInit() {
             for (SDK::AActor* a : existing) st.knownDrops[a] = true;
         }
         return false;
+    });
+    // 1.6.14: a golem's rock is held in its hand (kLocalOnly) and sent when it is thrown
+    hooks::AddPost(kGolemRockFire, [](hooks::CallInfo& ci) {
+        auto& st = S();
+        auto* rock = static_cast<SDK::AActor*>(ci.object);
+        if (st.spawningRemote || !coop::InSession() || !rock || !ue::IsValid(rock)) return;
+        uint64_t id = 0;
+        if (rock->Instigator) id = EnemyIdOfActor(rock->Instigator);
+        if (!id && rock->Owner) id = EnemyIdOfActor(rock->Owner);
+        if (!id || !EnemyOwnedHere(id)) return;
+        SDK::AActor* enemy = EnemyActorOfId(id);
+        SDK::UProjectileMovementComponent* pm = ProjectileOf(rock);
+        const auto slot = coop::LocalSlot();
+        if (!enemy || !pm || !slot) return;
+        net::MsgHazard m;
+        m.enemyId = id;
+        m.ownerSlot = *slot;
+        m.flags = kIsFired;
+        if (rock->Owner == enemy) m.flags |= kOwnerIsEnemy;
+        if (static_cast<SDK::AActor*>(rock->Instigator) == enemy) m.flags |= kInstigatorIsEnemy;
+        m.classPath = ue::PathName(rock->Class);
+        const SDK::FVector loc = rock->K2_GetActorLocation();
+        const SDK::FRotator rot = rock->K2_GetActorRotation();
+        const SDK::FVector sc = rock->GetActorScale3D();
+        m.pos = {loc.X, loc.Y, loc.Z};
+        m.rot = {rot.Pitch, rot.Yaw, rot.Roll};
+        m.scale = {sc.X, sc.Y, sc.Z};
+        PutVelocity(m.guid, pm->Velocity);
+        st.outbox.push_back(std::move(m));
     });
     if (!hooks::AddNativePost("/Script/Engine.GameplayStatics:FinishSpawningActor", &OnSpawned))
         QD_WARN(kTag, "FinishSpawningActor not hooked: enemy projectiles stay local");
