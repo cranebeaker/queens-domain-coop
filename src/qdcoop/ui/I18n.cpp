@@ -280,7 +280,6 @@ constexpr Entry kTable[] = {
     {"page.leave", "Leave lobby", "离开房间", "ロビーを出る"},
     {"page.invite", "Invite friends", "邀请好友", "フレンドを招待"},
     {"page.invite_failed", "The Steam overlay is not available (is it turned on in Steam?)", "Steam 界面不可用（是否已在 Steam 中开启？）", "Steam オーバーレイが使えません（Steam で有効になっていますか？）"},
-    {"page.invite_hint", "Invite friends opens Steam: they get a join invite", "邀请好友会打开 Steam：好友会收到加入邀请", "「フレンドを招待」で Steam が開き、参加の招待が届きます"},
     {"page.difficulty", "Difficulty: {}", "难度：{}", "難易度：{}"},
     {"page.host_picks", "(the host picks)", "（由房主选择）", "（ホストが選びます）"},
     {"page.your_name", "Your name", "你的名字", "あなたの名前"},

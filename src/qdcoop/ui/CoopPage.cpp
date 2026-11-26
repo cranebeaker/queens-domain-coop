@@ -537,7 +537,6 @@ void Build() {
         Add(TextButton(Tr("page.invite"), [] {
             if (!coop::Session().OpenInviteOverlay()) Toast(Tr("page.invite_failed"), ToastKind::Error, 4.0f);
         }));
-        if (v.rows.size() <= 1) AddText(Tr("page.invite_hint"), 0.65f, true);
         if (v.onTitle && !v.started) {
             if (v.isHost) {
                 if (v.allReady) Add(TextButton(Tr("lobby.play_now"), [] { Close(); sync::LobbyHostPlayNow(); }));
