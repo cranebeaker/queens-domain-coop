@@ -221,6 +221,7 @@ State& S() {
     return s;
 }
 void NoteBigMoment();   // autosave, below
+void HostSaveNow(uint8_t askedBy);
 
 bool IsFsPlayer(const SDK::UObject* o) {
     auto& s = S();
